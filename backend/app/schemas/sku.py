@@ -11,6 +11,8 @@ class SkuCreateIn(BaseModel):
 
 
 class SkuAttributeValueOut(BaseModel):
+    attribute_id: int
+    option_id: int
     attribute_code: str
     attribute_name: str
     option_code: str
@@ -20,8 +22,10 @@ class SkuAttributeValueOut(BaseModel):
 
 class SkuNodeOut(BaseModel):
     id: int
+    slot_id: int | None
     slot_code: str | None
     slot_name: str | None
+    node_type_id: int
     node_type_code: str
     node_type_name: str
     mode: str

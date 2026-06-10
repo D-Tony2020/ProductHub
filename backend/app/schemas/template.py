@@ -125,6 +125,10 @@ class OptionOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class AttributeWithOptionsOut(AttributeOut):
+    options: list[OptionOut] = []
+
+
 class NodeTypeDetailOut(NodeTypeOut):
-    attributes: list[AttributeOut] = []
+    attributes: list[AttributeWithOptionsOut] = []
     slots: list[SlotOut] = []

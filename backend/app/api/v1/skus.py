@@ -47,6 +47,8 @@ def _node_out(db: Session, node: SkuConfigNode) -> SkuNodeOut:
     for av in sorted(node.attribute_values, key=lambda v: v.attribute.display_order):
         attrs.append(
             SkuAttributeValueOut(
+                attribute_id=av.attribute_id,
+                option_id=av.option_id,
                 attribute_code=av.attribute.code,
                 attribute_name=av.attribute.name,
                 option_code=av.option.code,
@@ -57,8 +59,10 @@ def _node_out(db: Session, node: SkuConfigNode) -> SkuNodeOut:
     part = node.purchased_part
     return SkuNodeOut(
         id=node.id,
+        slot_id=node.slot_id,
         slot_code=node.slot.code if node.slot else None,
         slot_name=node.slot.name if node.slot else None,
+        node_type_id=node.node_type_id,
         node_type_code=db.get(NodeType, node.node_type_id).code,
         node_type_name=db.get(NodeType, node.node_type_id).name,
         mode=node.mode,

@@ -16,6 +16,7 @@ from app.schemas.template import (
     AttributeIn,
     AttributeOut,
     AttributeUpdate,
+    AttributeWithOptionsOut,
     NodeTypeDetailOut,
     NodeTypeIn,
     NodeTypeOut,
@@ -67,9 +68,14 @@ def get_node_type(
     type_id: int, db: Session = Depends(get_db), _: AppUser = Depends(get_current_user)
 ):
     nt = get_or_404(db, NodeType, type_id)
+    attrs = []
+    for a in nt.attributes:
+        item = AttributeWithOptionsOut.model_validate(a)
+        item.options = [OptionOut.model_validate(o) for o in a.options]
+        attrs.append(item)
     return NodeTypeDetailOut(
         **NodeTypeOut.model_validate(nt).model_dump(),
-        attributes=[AttributeOut.model_validate(a) for a in nt.attributes],
+        attributes=attrs,
         slots=[SlotOut.model_validate(s) for s in nt.slots],
     )
 
