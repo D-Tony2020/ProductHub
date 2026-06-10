@@ -1,0 +1,22 @@
+name: producthub-dev
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: producthub-dev-pg
+    environment:
+      POSTGRES_USER: producthub
+      POSTGRES_PASSWORD: producthub_dev
+      POSTGRES_DB: producthub
+    ports:
+      - "127.0.0.1:5440:5432"
+    volumes:
+      - producthub_dev_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U producthub -d producthub"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  producthub_dev_pgdata:

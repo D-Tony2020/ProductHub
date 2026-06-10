@@ -1,0 +1,56 @@
+# 生产拓扑：caddy(自动 HTTPS) + app + postgres。
+# 主机建议：香港轻量云 2C4G（免 ICP 备案，海外业务员访问体验好）。
+# 使用前：复制 .env.prod.example 为 .env.prod 并填强随机密钥与域名。
+name: producthub
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: producthub
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env.prod}
+      POSTGRES_DB: producthub
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U producthub -d producthub"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  app:
+    build:
+      context: ../backend
+    restart: unless-stopped
+    environment:
+      PRODUCTHUB_DATABASE_URL: postgresql+psycopg://producthub:${POSTGRES_PASSWORD}@postgres:5432/producthub
+      PRODUCTHUB_JWT_SECRET: ${JWT_SECRET:?set in .env.prod}
+      PRODUCTHUB_DEFAULT_CURRENCY: ${DEFAULT_CURRENCY:-USD}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      SITE_DOMAIN: ${SITE_DOMAIN:?set in .env.prod}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ../frontend/dist:/srv/frontend:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

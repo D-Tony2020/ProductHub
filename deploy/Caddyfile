@@ -1,0 +1,18 @@
+{$SITE_DOMAIN} {
+	encode gzip
+
+	# API 反代
+	handle /api/* {
+		reverse_proxy app:8000
+	}
+	handle /healthz {
+		reverse_proxy app:8000
+	}
+
+	# 前端 SPA
+	handle {
+		root * /srv/frontend
+		try_files {path} /index.html
+		file_server
+	}
+}

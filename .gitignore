@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+frontend/dist/
+
+# 本地配置与密钥（永不入仓）
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# 运行产物
+logs/
+*.log
+tmp/
+exports/
+
+# 编辑器/系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Claude 本地状态
+.claude/
