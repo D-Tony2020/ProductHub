@@ -238,6 +238,8 @@ def process_row(
             raise RowError(f"价格非法：{price_raw}")
         if price < 0:
             raise RowError("价格不能为负")
+        if price > Decimal("9999999999.9999"):
+            raise RowError(f"价格超出上限：{price_raw}")
     currency = str(cells.get("currency") or get_settings().default_currency).strip().upper()
     valid_from_raw = cells.get("valid_from")
     if valid_from_raw is None or str(valid_from_raw).strip() == "":

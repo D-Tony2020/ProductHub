@@ -120,7 +120,7 @@ async function select(t: any) {
   }
 }
 
-onMounted(loadTypes)
+onMounted(() => loadTypes().catch(() => { /* 401 由拦截器跳转登录 */ }))
 
 async function createType() {
   await api.post('/template/node-types', typeDialog.form)

@@ -23,7 +23,7 @@ async function load() {
   if (!current.value && draftQuotes.value.length) selectQuote(draftQuotes.value[0])
 }
 
-onMounted(load)
+onMounted(() => load().catch(() => { /* 401 由拦截器跳转登录 */ }))
 
 function selectQuote(q: any) {
   current.value = q

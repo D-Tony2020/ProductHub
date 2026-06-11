@@ -33,11 +33,14 @@ const currentPath = ref<number[]>([])
 const { validating, result, trigger } = useValidator()
 
 onMounted(async () => {
-  const { data } = await api.get('/template/node-types')
-  rootTypes.value = data.filter((t: any) => t.kind === 'product' && t.is_sellable_root)
-  drafts.value = (await api.get('/config-drafts')).data
-  const skuId = route.query.sku_id
-  if (skuId) await startFromSku(Number(skuId))
+  try {
+    const { data } = await api.get('/template/node-types')
+    // 凡可售根均可作配置起点：整机品类 + 单卖配件（如客户单卖筒体/阀门）
+    rootTypes.value = data.filter((t: any) => t.is_sellable_root)
+    drafts.value = (await api.get('/config-drafts')).data
+    const skuId = route.query.sku_id
+    if (skuId) await startFromSku(Number(skuId))
+  } catch { /* 401 由拦截器跳转登录 */ }
 })
 
 async function startNew(t: any) {
@@ -318,14 +321,22 @@ const serverComplete = computed(() => result.value?.complete === true)
   <!-- 起点：选品类 / 续草稿 -->
   <div v-if="!rootState">
     <h3>开始一次配置</h3>
-    <el-row :gutter="16">
-      <el-col v-for="t in rootTypes" :key="t.id" :span="6">
-        <el-card shadow="hover" style="cursor: pointer" @click="startNew(t)">
-          <b>{{ t.name }}</b>
-          <div style="color: var(--el-text-color-secondary); font-size: 12px">{{ t.code }}</div>
-        </el-card>
-      </el-col>
-    </el-row>
+    <template v-for="group in [
+      { label: '整机', items: rootTypes.filter((t: any) => t.kind === 'product') },
+      { label: '配件单卖', items: rootTypes.filter((t: any) => t.kind === 'part') },
+    ]" :key="group.label">
+      <template v-if="group.items.length">
+        <el-divider content-position="left">{{ group.label }}</el-divider>
+        <el-row :gutter="16">
+          <el-col v-for="t in group.items" :key="t.id" :span="6" style="margin-bottom: 12px">
+            <el-card shadow="hover" style="cursor: pointer" @click="startNew(t)">
+              <b>{{ t.name }}</b>
+              <div style="color: var(--el-text-color-secondary); font-size: 12px">{{ t.code }}</div>
+            </el-card>
+          </el-col>
+        </el-row>
+      </template>
+    </template>
     <template v-if="drafts.length">
       <h4 style="margin-top: 24px">我的草稿</h4>
       <el-table :data="drafts" style="max-width: 720px" @row-click="startFromDraft">

@@ -1,4 +1,6 @@
 """配置草稿：半成品选配，仅 owner 可见可改。非 SKU、不参与指纹与报价。"""
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -24,7 +26,7 @@ class DraftOut(BaseModel):
     root_type_name: str = ""
     title: str | None
     payload: dict
-    updated_at: str | None = None
+    updated_at: datetime | None = None
 
     model_config = {"from_attributes": True}
 
@@ -33,7 +35,6 @@ def _out(db: Session, d: ConfigDraft) -> DraftOut:
     out = DraftOut.model_validate(d)
     nt = db.get(NodeType, d.root_type_id)
     out.root_type_name = nt.name if nt else ""
-    out.updated_at = d.updated_at.isoformat() if d.updated_at else None
     return out
 
 

@@ -48,10 +48,12 @@ async function load() {
 }
 
 onMounted(async () => {
-  const { data } = await api.get('/template/node-types')
-  rootTypes.value = data.filter((t: any) => t.kind === 'product')
-  await load()
-  if (route.query.sku_id) await openDetailById(Number(route.query.sku_id))
+  try {
+    const { data } = await api.get('/template/node-types')
+    rootTypes.value = data.filter((t: any) => t.is_sellable_root)
+    await load()
+    if (route.query.sku_id) await openDetailById(Number(route.query.sku_id))
+  } catch { /* 401 由拦截器跳转登录 */ }
 })
 
 watch(() => filters.root_type_id, async (id) => {

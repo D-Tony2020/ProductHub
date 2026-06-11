@@ -65,7 +65,8 @@ class SkuListOut(BaseModel):
 
 
 class PriceIn(BaseModel):
-    price: Decimal = Field(ge=0)
+    # 上限对齐 Numeric(14,4) 容量，超限在入参层拦截而非数据库 500
+    price: Decimal = Field(ge=0, le=Decimal("9999999999.9999"))
     currency: str | None = Field(default=None, pattern=r"^[A-Z]{3}$")
     valid_from: str | None = None  # ISO 日期；缺省=今天
     note: str | None = Field(default=None, max_length=500)

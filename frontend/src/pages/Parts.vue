@@ -28,8 +28,10 @@ async function load() {
 }
 
 onMounted(async () => {
-  nodeTypes.value = (await api.get('/template/node-types')).data.filter((t: any) => t.kind === 'part')
-  await load()
+  try {
+    nodeTypes.value = (await api.get('/template/node-types')).data.filter((t: any) => t.kind === 'part')
+    await load()
+  } catch { /* 401 由拦截器跳转登录 */ }
 })
 watch(filters, () => void load())
 

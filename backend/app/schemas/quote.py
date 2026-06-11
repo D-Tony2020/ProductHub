@@ -20,12 +20,12 @@ class QuoteUpdate(BaseModel):
 
 class QuoteItemIn(BaseModel):
     sku_id: int
-    qty: int = Field(ge=1)
+    qty: int = Field(ge=1, le=100_000_000)
 
 
 class QuoteItemUpdate(BaseModel):
-    qty: int | None = Field(default=None, ge=1)
-    unit_price: Decimal | None = Field(default=None, ge=0)
+    qty: int | None = Field(default=None, ge=1, le=100_000_000)
+    unit_price: Decimal | None = Field(default=None, ge=0, le=Decimal("9999999999.9999"))
     line_note: str | None = Field(default=None, max_length=300)
 
 

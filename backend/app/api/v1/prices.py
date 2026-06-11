@@ -69,15 +69,24 @@ def set_price(
         )
     ).scalar_one_or_none()
     before = None
+    action = "set_price"
     if open_price is not None:
-        if open_price.valid_from >= valid_from:
+        before = {"price": str(open_price.price), "valid_from": open_price.valid_from.isoformat()}
+        if open_price.valid_from == valid_from:
+            # 同日纠错：手滑录错必须能当天改。日颗粒度下旧记录无法闭区间收尾
+            # （valid_to < valid_from 违反约束），故对"只追加"做受控例外：
+            # 删除当日错误记录，原值完整保留在审计 before_json 中。
+            action = "correct_price"
+            db.delete(open_price)
+            db.flush()
+        elif open_price.valid_from > valid_from:
             raise HTTPException(
                 409,
-                f"新价生效日 {valid_from} 不晚于现行价生效日 {open_price.valid_from}，"
-                "如需更正请先与管理员确认（价格记录只追加不覆盖）",
+                f"新价生效日 {valid_from} 早于现行价生效日 {open_price.valid_from}，"
+                "不允许回溯覆盖历史价格",
             )
-        before = {"price": str(open_price.price), "valid_from": open_price.valid_from.isoformat()}
-        open_price.valid_to = valid_from - timedelta(days=1)
+        else:
+            open_price.valid_to = valid_from - timedelta(days=1)
 
     new_price = SkuPrice(
         sku_id=sku_id, price=body.price, currency=currency,
@@ -89,7 +98,7 @@ def set_price(
     except IntegrityError:
         db.rollback()
         raise HTTPException(409, "价格生效期与既有记录重叠（数据库排他约束拒绝），请刷新后重试")
-    write_audit(db, actor_id=user.id, action="set_price", entity_type="sku",
+    write_audit(db, actor_id=user.id, action=action, entity_type="sku",
                 entity_id=sku_id, before=before,
                 after={"price": str(body.price), "currency": currency,
                        "valid_from": valid_from.isoformat()})
