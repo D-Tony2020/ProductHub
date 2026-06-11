@@ -11,13 +11,38 @@ const types = ref<any[]>([])
 const selected = ref<any | null>(null)
 const optionRows = reactive<Record<number, any[]>>({})
 
-const typeDialog = reactive({ visible: false, form: { code: '', name: '', kind: 'part', is_sellable_root: false } })
-const attrDialog = reactive({ visible: false, form: { code: '', name: '', is_required: true, is_filterable: false } })
-const optDialog = reactive({ visible: false, attrId: 0, form: { code: '', label: '' } })
+// code 全部由后端按名称自动生成（拼音转写+查重），UI 不再要求填写
+const typeDialog = reactive({ visible: false, form: { name: '', kind: 'part', is_sellable_root: false } })
+const attrDialog = reactive({ visible: false, form: { name: '', is_required: true, is_filterable: false } })
+const optDialog = reactive({ visible: false, attrId: 0, form: { label: '' } })
 const slotDialog = reactive({
   visible: false,
-  form: { code: '', name: '', child_type_id: null as number | null, is_required: true, allow_blackbox: true },
+  source: 'existing' as 'existing' | 'new',   // 部件类型来源：选已有 / 现场新建
+  form: { name: '', child_type_id: null as number | null, is_required: true, allow_blackbox: true },
 })
+
+function openSlotDialog() {
+  slotDialog.source = 'existing'
+  slotDialog.form = { name: '', child_type_id: null, is_required: true, allow_blackbox: true }
+  slotDialog.visible = true
+}
+
+// ---- 节点类型拖拽排序 ----
+const dragIndex = ref<number | null>(null)
+
+function onDragStart(idx: number) {
+  dragIndex.value = idx
+}
+
+async function onDrop(targetIdx: number) {
+  const from = dragIndex.value
+  dragIndex.value = null
+  if (from === null || from === targetIdx) return
+  const moved = types.value.splice(from, 1)[0]
+  types.value.splice(targetIdx, 0, moved)
+  await api.put('/template/node-types/reorder', { ids: types.value.map((t) => t.id) })
+  ElMessage.success('排序已保存')
+}
 
 async function loadTypes() {
   types.value = (await api.get('/template/node-types', { params: { include_inactive: true } })).data
@@ -36,9 +61,9 @@ onMounted(loadTypes)
 async function createType() {
   await api.post('/template/node-types', typeDialog.form)
   typeDialog.visible = false
-  typeDialog.form = { code: '', name: '', kind: 'part', is_sellable_root: false }
+  typeDialog.form = { name: '', kind: 'part', is_sellable_root: false }
   await loadTypes()
-  ElMessage.success('已创建。注意：code 一经创建不可修改')
+  ElMessage.success('已创建')
 }
 
 async function toggleTypeActive(t: any) {
@@ -50,7 +75,7 @@ async function toggleTypeActive(t: any) {
 async function createAttr() {
   await api.post(`/template/node-types/${selected.value.id}/attributes`, attrDialog.form)
   attrDialog.visible = false
-  attrDialog.form = { code: '', name: '', is_required: true, is_filterable: false }
+  attrDialog.form = { name: '', is_required: true, is_filterable: false }
   await select(selected.value)
 }
 
@@ -58,7 +83,7 @@ async function createOption() {
   try {
     await api.post(`/template/attributes/${optDialog.attrId}/options`, optDialog.form)
     optDialog.visible = false
-    optDialog.form = { code: '', label: '' }
+    optDialog.form = { label: '' }
     await select(selected.value)
   } catch (e: any) {
     // 409（如可选属性"无"选项禁令）由拦截器提示
@@ -72,10 +97,36 @@ async function toggleOption(o: any) {
 }
 
 async function createSlot() {
-  await api.post(`/template/node-types/${selected.value.id}/slots`, slotDialog.form)
-  slotDialog.visible = false
-  slotDialog.form = { code: '', name: '', child_type_id: null, is_required: true, allow_blackbox: true }
-  await select(selected.value)
+  try {
+    if (!slotDialog.form.name) {
+      ElMessage.warning('请填写部件名称')
+      return
+    }
+    let childTypeId = slotDialog.form.child_type_id
+    // 现场新建部件类型：先建一个 part 类型（code 后端自动生成），再用它建槽
+    if (slotDialog.source === 'new') {
+      const { data } = await api.post('/template/node-types', {
+        name: slotDialog.form.name, kind: 'part',
+      })
+      childTypeId = data.id
+      await loadTypes()
+    }
+    if (!childTypeId) {
+      ElMessage.warning('请选择部件类型')
+      return
+    }
+    await api.post(`/template/node-types/${selected.value.id}/slots`, {
+      name: slotDialog.form.name,
+      child_type_id: childTypeId,
+      is_required: slotDialog.form.is_required,
+      allow_blackbox: slotDialog.form.allow_blackbox,
+    })
+    slotDialog.visible = false
+    await select(selected.value)
+    ElMessage.success('部件槽已创建')
+  } catch {
+    // 409（如 code 重复、形成环）由拦截器提示
+  }
 }
 
 async function toggleSlot(s: any) {
@@ -99,15 +150,25 @@ function typeName(id: number) {
           </div>
         </template>
         <div
-          v-for="t in types" :key="t.id" class="type-item"
-          :class="{ active: selected?.id === t.id, inactive: !t.is_active }" @click="select(t)"
+          v-for="(t, idx) in types" :key="t.id" class="type-item"
+          :class="{ active: selected?.id === t.id, inactive: !t.is_active, dragging: dragIndex === idx }"
+          draggable="true"
+          @click="select(t)"
+          @dragstart="onDragStart(idx)"
+          @dragover.prevent
+          @drop.prevent="onDrop(idx)"
+          @dragend="dragIndex = null"
         >
+          <span class="drag-handle" title="拖动排序">⠿</span>
           <el-tag size="small" :type="t.kind === 'product' ? 'success' : 'info'">
             {{ t.kind === 'product' ? '品类' : '部件' }}
           </el-tag>
           {{ t.name }}
           <small style="color: var(--el-text-color-secondary)">{{ t.code }}</small>
         </div>
+        <p style="font-size: 12px; color: var(--el-text-color-secondary); margin-top: 8px">
+          按住任意一行拖动可调整显示顺序（影响配置看板与筛选器的排列）
+        </p>
       </el-card>
     </el-col>
 
@@ -155,7 +216,7 @@ function typeName(id: number) {
         </el-collapse>
 
         <h4 style="margin-top: 18px">部件槽
-          <el-button size="small" style="margin-left: 8px" @click="slotDialog.visible = true">+ 部件槽</el-button>
+          <el-button size="small" style="margin-left: 8px" @click="openSlotDialog">+ 部件槽</el-button>
         </h4>
         <el-table :data="selected.slots" size="small">
           <el-table-column prop="code" label="槽 code（不可变）" width="160" />
@@ -184,7 +245,7 @@ function typeName(id: number) {
         <el-alert
           type="info" :closable="false" style="margin-top: 16px"
           title="模板纪律（系统强制）"
-          description="code 一经创建不可修改（进入 SKU 指纹）；删除一律软停用，被 SKU 引用的对象数据库层禁止物理删除；停用只影响新配置，既有 SKU 的展示与指纹永不改变；可选属性禁止创建“无/不带”语义的选项。"
+          description="编码由系统按名称自动生成、一经创建不可修改（进入 SKU 唯一性校验）；删除一律软停用，被 SKU 引用的对象数据库层禁止物理删除；停用只影响新配置，既有 SKU 的展示与指纹永不改变；可选属性禁止创建“无/不带”语义的选项。"
         />
       </el-card>
       <el-empty v-else description="左侧选择一个节点类型" />
@@ -194,10 +255,9 @@ function typeName(id: number) {
   <!-- 对话框们 -->
   <el-dialog v-model="typeDialog.visible" title="新建节点类型" width="460">
     <el-form label-width="110px">
-      <el-form-item label="code" required>
-        <el-input v-model="typeDialog.form.code" placeholder="大写字母/数字/下划线，如 VALVE" />
+      <el-form-item label="名称" required>
+        <el-input v-model="typeDialog.form.name" placeholder="如：顶杆（编码由系统自动生成）" />
       </el-form-item>
-      <el-form-item label="名称" required><el-input v-model="typeDialog.form.name" /></el-form-item>
       <el-form-item label="类别">
         <el-radio-group v-model="typeDialog.form.kind">
           <el-radio value="product">整机品类</el-radio>
@@ -216,8 +276,9 @@ function typeName(id: number) {
 
   <el-dialog v-model="attrDialog.visible" title="新建属性" width="460">
     <el-form label-width="110px">
-      <el-form-item label="code" required><el-input v-model="attrDialog.form.code" /></el-form-item>
-      <el-form-item label="名称" required><el-input v-model="attrDialog.form.name" /></el-form-item>
+      <el-form-item label="名称" required>
+        <el-input v-model="attrDialog.form.name" placeholder="如：充装量" />
+      </el-form-item>
       <el-form-item label="必选"><el-switch v-model="attrDialog.form.is_required" /></el-form-item>
       <el-form-item label="作为筛选项"><el-switch v-model="attrDialog.form.is_filterable" /></el-form-item>
     </el-form>
@@ -229,11 +290,8 @@ function typeName(id: number) {
 
   <el-dialog v-model="optDialog.visible" title="新建选项" width="460">
     <el-form label-width="110px">
-      <el-form-item label="code" required>
-        <el-input v-model="optDialog.form.code" placeholder="如 KG4（不可变，入指纹）" />
-      </el-form-item>
       <el-form-item label="显示名" required>
-        <el-input v-model="optDialog.form.label" placeholder="如 4kg（可改）" />
+        <el-input v-model="optDialog.form.label" placeholder="如 4kg（编码由系统自动生成）" />
       </el-form-item>
     </el-form>
     <template #footer>
@@ -244,18 +302,35 @@ function typeName(id: number) {
 
   <el-dialog v-model="slotDialog.visible" title="新建部件槽" width="460">
     <el-form label-width="110px">
-      <el-form-item label="code" required><el-input v-model="slotDialog.form.code" /></el-form-item>
-      <el-form-item label="名称" required><el-input v-model="slotDialog.form.name" /></el-form-item>
+      <el-form-item label="名称" required>
+        <el-input v-model="slotDialog.form.name" placeholder="部件名，如 顶杆；新建类型时同时作为部件名" />
+      </el-form-item>
       <el-form-item label="部件类型" required>
-        <el-select v-model="slotDialog.form.child_type_id" filterable style="width: 100%">
+        <el-radio-group v-model="slotDialog.source" style="margin-bottom: 8px">
+          <el-radio-button value="existing">选用已有类型</el-radio-button>
+          <el-radio-button value="new">现场新建类型</el-radio-button>
+        </el-radio-group>
+        <el-select
+          v-if="slotDialog.source === 'existing'"
+          v-model="slotDialog.form.child_type_id" filterable style="width: 100%"
+          placeholder="选择已有的部件类型"
+        >
           <el-option
             v-for="t in types.filter(t => t.is_active)" :key="t.id" :value="t.id"
             :label="`${t.name}（${t.code}）`"
           />
         </el-select>
+        <el-alert
+          v-else type="info" :closable="false"
+          title="将以上面的名称新建一个部件类型（编码自动生成）并挂到当前部件下"
+        />
       </el-form-item>
       <el-form-item label="必配"><el-switch v-model="slotDialog.form.is_required" /></el-form-item>
       <el-form-item label="允许成品件"><el-switch v-model="slotDialog.form.allow_blackbox" /></el-form-item>
+      <el-alert
+        v-if="slotDialog.source === 'new'" type="info" :closable="false"
+        title="将新建一个部件类型并挂到当前部件下。建好后可在左栏选中它，继续给它加属性和下一级部件（递归拆解）。"
+      />
     </el-form>
     <template #footer>
       <el-button @click="slotDialog.visible = false">取消</el-button>
@@ -274,4 +349,11 @@ function typeName(id: number) {
 .type-item:hover { background: var(--el-fill-color-light); }
 .type-item.active { background: var(--el-color-primary-light-9); }
 .type-item.inactive { opacity: 0.5; }
+.type-item.dragging { opacity: 0.4; border: 1px dashed var(--el-color-primary); }
+.drag-handle {
+  cursor: grab;
+  color: var(--el-text-color-placeholder);
+  margin-right: 4px;
+  user-select: none;
+}
 </style>

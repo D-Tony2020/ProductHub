@@ -6,7 +6,8 @@ CODE_PATTERN = r"^[A-Z0-9_-]+$"
 
 
 class NodeTypeIn(BaseModel):
-    code: str = Field(min_length=1, max_length=50, pattern=CODE_PATTERN)
+    # code 缺省时由名称拼音自动生成（UI 已不暴露；API 保留显式传入供导入/种子使用）
+    code: str | None = Field(default=None, min_length=1, max_length=50, pattern=CODE_PATTERN)
     name: str = Field(min_length=1, max_length=100)
     kind: str = Field(pattern=r"^(product|part)$")
     is_sellable_root: bool = False
@@ -35,7 +36,7 @@ class NodeTypeOut(BaseModel):
 
 class SlotIn(BaseModel):
     child_type_id: int
-    code: str = Field(min_length=1, max_length=50, pattern=CODE_PATTERN)
+    code: str | None = Field(default=None, min_length=1, max_length=50, pattern=CODE_PATTERN)
     name: str = Field(min_length=1, max_length=100)
     is_required: bool = True
     allow_blackbox: bool = True
@@ -65,7 +66,7 @@ class SlotOut(BaseModel):
 
 
 class AttributeIn(BaseModel):
-    code: str = Field(min_length=1, max_length=50, pattern=CODE_PATTERN)
+    code: str | None = Field(default=None, min_length=1, max_length=50, pattern=CODE_PATTERN)
     name: str = Field(min_length=1, max_length=100)
     value_kind: str = Field(default="enum", pattern=r"^enum$")  # v1 只开放 enum
     unit: str | None = Field(default=None, max_length=20)
@@ -99,7 +100,7 @@ class AttributeOut(BaseModel):
 
 
 class OptionIn(BaseModel):
-    code: str = Field(min_length=1, max_length=50, pattern=CODE_PATTERN)
+    code: str | None = Field(default=None, min_length=1, max_length=50, pattern=CODE_PATTERN)
     label: str = Field(min_length=1, max_length=100)
     numeric_value: Decimal | None = None
     display_order: int = 0

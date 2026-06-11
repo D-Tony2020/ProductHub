@@ -15,6 +15,7 @@ dependencies = [
     "bcrypt>=4.2",
     "openpyxl>=3.1",
     "python-multipart>=0.0.12",
+    "pypinyin>=0.53",
 ]
 
 [project.optional-dependencies]
