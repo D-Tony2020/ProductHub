@@ -23,6 +23,8 @@ logs/
 *.log
 tmp/
 exports/
+backups/
+*.dump
 
 # 编辑器/系统
 .vscode/
