@@ -129,6 +129,58 @@ watch(rootState, () => {
   }
 }, { deep: true })
 
+// ---------- 互斥槽组（变体三选一） ----------
+const ungroupedSlots = computed(() => currentMeta.value?.slots.filter((s) => !s.variant_group) ?? [])
+const slotGroups = computed(() => {
+  const map = new Map<string, SlotMeta[]>()
+  for (const s of currentMeta.value?.slots ?? []) {
+    if (!s.variant_group) continue
+    if (!map.has(s.variant_group)) map.set(s.variant_group, [])
+    map.get(s.variant_group)!.push(s)
+  }
+  return [...map.entries()].map(([name, slots]) => ({ name, slots }))
+})
+
+// 每组当前选中的变体槽（含尚未选择配置方式的"工作中"状态）
+const groupChoice = ref<Record<string, number | null>>({})
+watch([currentNode, currentMeta], () => {
+  const gc: Record<string, number | null> = {}
+  for (const g of slotGroups.value) {
+    const active = g.slots.find((s) => {
+      const st = currentNode.value?.slots[s.id]
+      return st && st.mode !== 'empty'
+    })
+    gc[g.name] = active?.id ?? groupChoice.value[g.name] ?? null
+  }
+  groupChoice.value = gc
+}, { immediate: true })
+
+async function chooseVariant(group: { name: string; slots: SlotMeta[] }, slotId: number) {
+  const node = currentNode.value
+  if (!node) return
+  const prev = group.slots.find((s) => s.id !== slotId && node.slots[s.id]?.mode !== 'empty')
+  if (prev) {
+    try {
+      await ElMessageBox.confirm(
+        `切换会清空「${prev.name}」已配置的内容，确认？`, '提示', { type: 'warning' },
+      )
+    } catch {
+      return
+    }
+    const st = node.slots[prev.id]
+    st.mode = 'empty'
+    st.child = null
+    st.partId = null
+    st.partLabel = ''
+  }
+  groupChoice.value[group.name] = slotId
+}
+
+function chosenSlotOf(group: { name: string; slots: SlotMeta[] }): SlotMeta | null {
+  const id = groupChoice.value[group.name]
+  return group.slots.find((s) => s.id === id) ?? null
+}
+
 // ---------- 槽操作 ----------
 const picker = reactive({ visible: false, slotId: 0, nodeTypeId: 0, slotName: '' })
 
@@ -196,8 +248,16 @@ const treeData = computed<TreeItem[]>(() => {
     const meta = nodeMeta(node)
     const p = localProgress(node)
     const children: TreeItem[] = []
+    const pendingGroups = new Set<string>()
+    const resolvedGroups = new Set<string>()
     for (const slot of meta?.slots ?? []) {
       const st = node.slots[slot.id]
+      const active = (st?.mode === 'purchased' && st.partId) || (st?.mode === 'configured' && st.child)
+      if (slot.variant_group && !active) {
+        pendingGroups.add(slot.variant_group)
+        continue // 未选中的变体不进树，整组以"待选"占位
+      }
+      if (slot.variant_group) resolvedGroups.add(slot.variant_group)
       if (st?.mode === 'purchased' && st.partId) {
         children.push({
           label: slot.name, path: [...path, slot.id], status: 'blackbox',
@@ -208,8 +268,13 @@ const treeData = computed<TreeItem[]>(() => {
       } else {
         children.push({
           label: slot.name, path: [...path, slot.id],
-          status: slot.is_required ? 'todo' : 'todo', children: [],
+          status: 'todo', children: [],
         })
+      }
+    }
+    for (const g of pendingGroups) {
+      if (!resolvedGroups.has(g)) {
+        children.push({ label: `${g}（待选）`, path, status: 'todo', children: [] })
       }
     }
     return {
@@ -418,8 +483,59 @@ const serverComplete = computed(() => result.value?.complete === true)
 
           <template v-if="currentMeta.slots.length">
             <h4>部件</h4>
+
+            <!-- 互斥槽组：变体 N 选 1 -->
+            <el-card
+              v-for="g in slotGroups" :key="g.name" shadow="never" style="margin-bottom: 12px"
+            >
+              <template #header>
+                <span>
+                  {{ g.name }}
+                  <el-tag size="small" type="danger" effect="plain">{{ g.slots.length }} 选 1</el-tag>
+                </span>
+              </template>
+              <el-radio-group
+                :model-value="groupChoice[g.name]"
+                @update:model-value="(v: any) => chooseVariant(g, v)"
+              >
+                <el-radio-button v-for="s in g.slots" :key="s.id" :value="s.id">
+                  {{ s.name }}
+                </el-radio-button>
+              </el-radio-group>
+
+              <template v-for="slot in (chosenSlotOf(g) ? [chosenSlotOf(g)!] : [])" :key="slot.id">
+                <div style="margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--el-border-color)">
+                  <el-radio-group
+                    :model-value="slotState(slot.id)?.mode"
+                    size="small"
+                    @update:model-value="(m: any) => setSlotMode(slot, m)"
+                  >
+                    <el-radio-button value="configured">逐项配置</el-radio-button>
+                    <el-radio-button v-if="slot.allow_blackbox" value="purchased">选用成品采购件</el-radio-button>
+                  </el-radio-group>
+                  <div style="margin-top: 10px">
+                    <template v-if="slotState(slot.id)?.mode === 'configured' && slotState(slot.id)?.child">
+                      <el-progress
+                        :percentage="(() => { const p = slotChildProgress(slot); return p && p.total ? Math.round(p.done / p.total * 100) : 0 })()"
+                        :stroke-width="6" style="margin-bottom: 6px"
+                      />
+                      <el-button size="small" type="primary" plain @click="enterSlot(slot)">进入配置 →</el-button>
+                    </template>
+                    <template v-else-if="slotState(slot.id)?.mode === 'purchased' && slotState(slot.id)?.partId">
+                      <el-tag type="info">成品采购件</el-tag>
+                      <div style="margin: 6px 0">{{ slotState(slot.id)?.partLabel }}</div>
+                      <el-button size="small" @click="setSlotMode(slot, 'purchased')">更换</el-button>
+                    </template>
+                    <div v-else style="color: var(--el-text-color-secondary); font-size: 12px">
+                      请选择该型号的配置方式
+                    </div>
+                  </div>
+                </div>
+              </template>
+            </el-card>
+
             <el-row :gutter="12">
-              <el-col v-for="slot in currentMeta.slots" :key="slot.id" :span="12" style="margin-bottom: 12px">
+              <el-col v-for="slot in ungroupedSlots" :key="slot.id" :span="12" style="margin-bottom: 12px">
                 <el-card shadow="never">
                   <template #header>
                     <span>

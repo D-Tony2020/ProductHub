@@ -27,6 +27,7 @@ export interface SlotMeta {
   child_type_id: number
   is_required: boolean
   allow_blackbox: boolean
+  variant_group: string | null
   is_active: boolean
 }
 export interface TypeMeta {
@@ -80,7 +81,8 @@ export async function newNodeState(typeId: number): Promise<NodeState> {
 
 /** 本地完整度（驱动进度条/树图标；权威判定仍在服务端）。
  * 规则：必选属性各计 1；黑盒槽（已选件）计 1/1；白盒槽并入子树计数；
- * 未配置的必配槽计 0/1；未配置的可选槽不计。 */
+ * 未配置的必配槽计 0/1；未配置的可选槽不计；
+ * 互斥组（变体）：组内无选择计 0/1，已选成员按普通槽规则计数。 */
 export function localProgress(node: NodeState): { done: number; total: number } {
   const meta = typeCache.get(node.typeId)
   if (!meta) return { done: 0, total: 1 }
@@ -91,18 +93,35 @@ export function localProgress(node: NodeState): { done: number; total: number } 
     total += 1
     if (node.attrs[a.id] != null) done += 1
   }
-  for (const s of meta.slots) {
+
+  const countSlot = (s: SlotMeta): boolean => {
     const st = node.slots[s.id]
     if (st && st.mode === 'purchased' && st.partId) {
       total += 1
       done += 1
-    } else if (st && st.mode === 'configured' && st.child) {
+      return true
+    }
+    if (st && st.mode === 'configured' && st.child) {
       const sub = localProgress(st.child)
       done += sub.done
       total += sub.total
-    } else if (s.is_required) {
-      total += 1
+      return true
     }
+    return false
+  }
+
+  const emptyGroups = new Set<string>()
+  const touchedGroups = new Set<string>()
+  for (const s of meta.slots) {
+    if (s.variant_group) {
+      if (countSlot(s)) touchedGroups.add(s.variant_group)
+      else emptyGroups.add(s.variant_group)
+      continue
+    }
+    if (!countSlot(s) && s.is_required) total += 1
+  }
+  for (const g of emptyGroups) {
+    if (!touchedGroups.has(g)) total += 1 // 整组未选：计一个缺口
   }
   return { done, total }
 }

@@ -18,12 +18,15 @@ const optDialog = reactive({ visible: false, attrId: 0, form: { label: '' } })
 const slotDialog = reactive({
   visible: false,
   source: 'existing' as 'existing' | 'new',   // 部件类型来源：选已有 / 现场新建
-  form: { name: '', child_type_id: null as number | null, is_required: true, allow_blackbox: true },
+  form: {
+    name: '', child_type_id: null as number | null,
+    is_required: true, allow_blackbox: true, variant_group: '',
+  },
 })
 
 function openSlotDialog() {
   slotDialog.source = 'existing'
-  slotDialog.form = { name: '', child_type_id: null, is_required: true, allow_blackbox: true }
+  slotDialog.form = { name: '', child_type_id: null, is_required: true, allow_blackbox: true, variant_group: '' }
   slotDialog.visible = true
 }
 
@@ -54,6 +57,7 @@ function openEdit(kind: typeof editDialog.kind, row: any, refCount = 0) {
   } else {
     editDialog.form = {
       name: row.name, is_required: row.is_required, allow_blackbox: row.allow_blackbox,
+      variant_group: row.variant_group ?? '',
     }
   }
   editDialog.visible = true
@@ -184,6 +188,7 @@ async function createSlot() {
       child_type_id: childTypeId,
       is_required: slotDialog.form.is_required,
       allow_blackbox: slotDialog.form.allow_blackbox,
+      variant_group: slotDialog.form.variant_group.trim() || null,
     })
     slotDialog.visible = false
     await select(selected.value)
@@ -303,6 +308,12 @@ function typeName(id: number) {
           <el-table-column label="允许成品件" width="100">
             <template #default="{ row }">{{ row.allow_blackbox ? '是' : '否' }}</template>
           </el-table-column>
+          <el-table-column label="互斥组" width="100">
+            <template #default="{ row }">
+              <el-tag v-if="row.variant_group" size="small" type="warning">{{ row.variant_group }}</el-tag>
+              <span v-else>—</span>
+            </template>
+          </el-table-column>
           <el-table-column label="状态 / 操作" width="210">
             <template #default="{ row }">
               <el-tag size="small" :type="row.is_active ? 'success' : 'info'">
@@ -399,6 +410,12 @@ function typeName(id: number) {
         <el-form-item label="名称" required><el-input v-model="editDialog.form.name" /></el-form-item>
         <el-form-item label="必配"><el-switch v-model="editDialog.form.is_required" /></el-form-item>
         <el-form-item label="允许成品件"><el-switch v-model="editDialog.form.allow_blackbox" /></el-form-item>
+        <el-form-item label="互斥组">
+          <el-input
+            v-model="editDialog.form.variant_group"
+            placeholder="如 型号：同组槽配置时 N 选 1；留空=普通槽"
+          />
+        </el-form-item>
       </template>
     </el-form>
     <template #footer>
@@ -434,6 +451,12 @@ function typeName(id: number) {
       </el-form-item>
       <el-form-item label="必配"><el-switch v-model="slotDialog.form.is_required" /></el-form-item>
       <el-form-item label="允许成品件"><el-switch v-model="slotDialog.form.allow_blackbox" /></el-form-item>
+      <el-form-item label="互斥组">
+        <el-input
+          v-model="slotDialog.form.variant_group"
+          placeholder="如 型号：同组多个槽配置时 N 选 1；留空=普通槽"
+        />
+      </el-form-item>
       <el-alert
         v-if="slotDialog.source === 'new'" type="info" :closable="false"
         title="将新建一个部件类型并挂到当前部件下。建好后可在左栏选中它，继续给它加属性和下一级部件（递归拆解）。"

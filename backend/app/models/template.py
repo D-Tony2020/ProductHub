@@ -63,6 +63,9 @@ class ComponentSlot(Base, PkMixin, TimestampMixin):
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     is_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     allow_blackbox: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # 互斥槽组（变体）：同一父类型下同组槽"恰好选配一个"（如喷管总成的「型号」三选一）。
+    # 组名仅作分组与展示，不入指纹（被选中槽以自身 code 入指纹，变体天然异指纹）。
+    variant_group: Mapped[str | None] = mapped_column(String(50))
     display_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 

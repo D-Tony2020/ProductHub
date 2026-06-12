@@ -159,6 +159,8 @@ def create_slot(
     data["code"] = data["code"] or unique_code(
         db, ComponentSlot, body.name, ComponentSlot.parent_type_id == parent.id
     )
+    if data.get("variant_group") is not None:
+        data["variant_group"] = data["variant_group"].strip() or None
     slot = ComponentSlot(parent_type_id=parent.id, **data)
     db.add(slot)
     try:
@@ -178,6 +180,11 @@ def update_slot(
     db: Session = Depends(get_db), admin: AppUser = Depends(require_admin),
 ):
     slot = get_or_404(db, ComponentSlot, slot_id)
+    # 互斥组允许显式清空：传空串 → NULL
+    if "variant_group" in body.model_fields_set and body.variant_group is not None:
+        body.variant_group = body.variant_group.strip() or None
+        if body.variant_group is None:
+            slot.variant_group = None
     before = _apply_updates(slot, body)
     write_audit(db, actor_id=admin.id, action="update", entity_type="component_slot",
                 entity_id=slot.id, before=before, after=body.model_dump(exclude_unset=True))

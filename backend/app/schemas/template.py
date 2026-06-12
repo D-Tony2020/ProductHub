@@ -40,6 +40,8 @@ class SlotIn(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     is_required: bool = True
     allow_blackbox: bool = True
+    # 互斥槽组（变体三选一等）：同组恰好选配一个；组名仅分组展示，不入指纹
+    variant_group: str | None = Field(default=None, max_length=50)
     display_order: int = 0
 
 
@@ -47,6 +49,7 @@ class SlotUpdate(BaseModel):
     name: str | None = Field(default=None, max_length=100)
     is_required: bool | None = None
     allow_blackbox: bool | None = None
+    variant_group: str | None = None
     display_order: int | None = None
     is_active: bool | None = None
 
@@ -59,6 +62,7 @@ class SlotOut(BaseModel):
     name: str
     is_required: bool
     allow_blackbox: bool
+    variant_group: str | None = None
     display_order: int
     is_active: bool
 

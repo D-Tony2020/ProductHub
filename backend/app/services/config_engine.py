@@ -139,12 +139,35 @@ def _walk(
             state.error(path, f"部件槽不属于该节点类型或已停用（slot_id={slot_id}）")
             ok = False
 
+    # 互斥槽组（变体）：同组内恰好选配一个，组语义取代组内槽各自的 is_required
+    groups: dict[str, list] = {}
+    for slot in active_slots.values():
+        if slot.variant_group:
+            groups.setdefault(slot.variant_group, []).append(slot)
+    for gname, gslots in groups.items():
+        chosen = [
+            s for s in gslots
+            if (sel := slot_sel.get(s.id)) is not None and sel.mode != "empty"
+        ]
+        if len(chosen) == 0:
+            names = " / ".join(s.name for s in gslots)
+            state.missing(path, f"「{gname}」需选择一种：{names}")
+            ok = False
+        elif len(chosen) > 1:
+            state.error(
+                path,
+                f"「{gname}」只能选择一种，当前选了 {len(chosen)} 个："
+                + "、".join(s.name for s in chosen),
+            )
+            ok = False
+
     child_tokens: list[tuple[str, str]] = []  # (slot.code, "slot_code:serial")
     for slot in active_slots.values():
         sel = slot_sel.get(slot.id)
         sub_path = f"{path}/{slot.code}"
         if sel is None or sel.mode == "empty":
-            if slot.is_required:
+            # 互斥组内的空槽由组级判定负责，不按单槽必配报缺
+            if slot.is_required and not slot.variant_group:
                 state.missing(sub_path, f"必配部件未配置：{slot.name}")
                 ok = False
             continue
