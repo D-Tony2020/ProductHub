@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /** SKU 库（货架，默认首页）：统计带 + 品类树 + 卡片/表格双视图 + 详情抽屉。
  *  P1：统计与计数走聚合端点，检索复用 /skus，零数据层改动。 */
-import { Goods, Grid, List } from '@element-plus/icons-vue'
+import { CopyDocument, Goods, Grid, List } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -135,7 +135,11 @@ const priceDialog = reactive({
   visible: false, sku: null as any, submitting: false,
   form: { price: '', currency: 'USD', valid_from: '', note: '' },
 })
-function openPriceDialog(sku: any) {
+async function openPriceDialog(sku: any) {
+  // 从卡片/表格直接改价时列表项无 config_tree，补一次详情用于全貌展示
+  if (!sku.config_tree) {
+    try { sku = (await api.get(`/skus/${sku.id}`)).data } catch { /* 用列表项兜底 */ }
+  }
   priceDialog.sku = sku
   priceDialog.form = {
     price: '', currency: sku.current_prices?.[0]?.currency || 'USD', valid_from: '', note: '',
@@ -295,12 +299,15 @@ function renderTreeText(node: any, depth = 0): string[] {
                 <el-tag v-if="row.status === 'retired'" type="info" size="small">已作废</el-tag>
               </div>
               <div class="sku-actions" @click.stop>
-                <el-button size="small" :disabled="!row.current_prices?.length || row.status !== 'active'"
+                <el-button size="small" type="primary"
+                           :disabled="!row.current_prices?.length || row.status !== 'active'"
                            @click="addToQuote(row)">加入报价单</el-button>
-                <el-button size="small" text
-                           @click="router.push({ path: '/configure', query: { sku_id: row.id } })">
-                  以此再配置
-                </el-button>
+                <el-button v-if="auth.canSetPrice" size="small" @click="openPriceDialog(row)">改价</el-button>
+                <span style="flex: 1"></span>
+                <el-tooltip content="以此为模板复制配置一个新 SKU" placement="top">
+                  <el-button size="small" text :icon="CopyDocument" aria-label="以此再配置"
+                             @click="router.push({ path: '/configure', query: { sku_id: row.id } })" />
+                </el-tooltip>
               </div>
             </el-card>
           </div>
@@ -324,13 +331,16 @@ function renderTreeText(node: any, depth = 0): string[] {
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="220">
+          <el-table-column label="操作" width="240">
             <template #default="{ row }">
-              <el-button size="small" :disabled="!row.current_prices?.length || row.status !== 'active'"
+              <el-button size="small" type="primary"
+                         :disabled="!row.current_prices?.length || row.status !== 'active'"
                          @click.stop="addToQuote(row)">加入报价单</el-button>
-              <el-button size="small" @click.stop="router.push({ path: '/configure', query: { sku_id: row.id } })">
-                以此再配置
-              </el-button>
+              <el-button v-if="auth.canSetPrice" size="small" @click.stop="openPriceDialog(row)">改价</el-button>
+              <el-tooltip content="以此为模板复制配置一个新 SKU" placement="top">
+                <el-button size="small" text :icon="CopyDocument" aria-label="以此再配置"
+                           @click.stop="router.push({ path: '/configure', query: { sku_id: row.id } })" />
+              </el-tooltip>
             </template>
           </el-table-column>
         </el-table>
