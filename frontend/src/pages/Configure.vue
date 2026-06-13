@@ -208,11 +208,17 @@ async function setSlotMode(slot: SlotMeta, mode: 'configured' | 'purchased' | 'e
     st.child = await newNodeState(slot.child_type_id)
     currentPath.value = [...currentPath.value, slot.id]
   } else if (mode === 'purchased') {
-    picker.visible = true
-    picker.slotId = slot.id
-    picker.nodeTypeId = slot.child_type_id
-    picker.slotName = slot.name
+    openPartPicker(slot)
   }
+}
+
+/** 打开成品件选择器（新选或"更换"）。不走 setSlotMode 的 mode 早退，
+ *  故已是 purchased 态时点"更换"也能弹出；取消则保留原件。 */
+function openPartPicker(slot: SlotMeta) {
+  picker.visible = true
+  picker.slotId = slot.id
+  picker.nodeTypeId = slot.child_type_id
+  picker.slotName = slot.name
 }
 
 function onPartSelected(part: { id: number; label: string }) {
@@ -524,7 +530,7 @@ const serverComplete = computed(() => result.value?.complete === true)
                     <template v-else-if="slotState(slot.id)?.mode === 'purchased' && slotState(slot.id)?.partId">
                       <el-tag type="info">成品采购件</el-tag>
                       <div style="margin: 6px 0">{{ slotState(slot.id)?.partLabel }}</div>
-                      <el-button size="small" @click="setSlotMode(slot, 'purchased')">更换</el-button>
+                      <el-button size="small" @click="openPartPicker(slot)">更换</el-button>
                     </template>
                     <div v-else style="color: var(--el-text-color-secondary); font-size: 12px">
                       请选择该型号的配置方式
@@ -563,7 +569,7 @@ const serverComplete = computed(() => result.value?.complete === true)
                     <template v-else-if="slotState(slot.id)?.mode === 'purchased' && slotState(slot.id)?.partId">
                       <el-tag type="info">成品采购件</el-tag>
                       <div style="margin: 6px 0">{{ slotState(slot.id)?.partLabel }}</div>
-                      <el-button size="small" @click="setSlotMode(slot, 'purchased')">更换</el-button>
+                      <el-button size="small" @click="openPartPicker(slot)">更换</el-button>
                     </template>
                     <div v-else style="color: var(--el-text-color-secondary); font-size: 12px">
                       {{ slot.is_required ? '尚未配置' : '可选，未配置' }}

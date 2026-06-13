@@ -17,6 +17,30 @@ def login(client):
     return {"Authorization": f"Bearer {resp.json()['access_token']}"}
 
 
+def test_reverse_belonging(client, template):
+    """档位一回归：detail 返回 parents（不再 500）+ with_counts 的 parent_count。"""
+    headers = login(client)
+    cyl_id = template["cyl"].id
+    ext_id = template["ext"].id
+
+    # 详情端点不报 500，且 cyl 的上级是 ext（被当部件引用）
+    r = client.get(f"/api/v1/template/node-types/{cyl_id}", headers=headers)
+    assert r.status_code == 200, r.text
+    parents = r.json()["parents"]
+    assert [p["id"] for p in parents] == [ext_id]
+    assert parents[0]["is_active"] is True
+
+    # 整机 ext 不被任何上级引用 → parents 空
+    r = client.get(f"/api/v1/template/node-types/{ext_id}", headers=headers)
+    assert r.json()["parents"] == []
+
+    # with_counts 的 parent_count：cyl=1，ext=0
+    types = client.get("/api/v1/template/node-types",
+                       params={"with_counts": True}, headers=headers).json()
+    assert next(t for t in types if t["id"] == cyl_id)["parent_count"] == 1
+    assert next(t for t in types if t["id"] == ext_id)["parent_count"] == 0
+
+
 def test_auto_code_from_chinese_name(client, template):
     headers = login(client)
     # 节点类型：中文名 → 拼音 code

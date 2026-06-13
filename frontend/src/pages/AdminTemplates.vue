@@ -2,8 +2,9 @@
 /** 产品模板管理（admin）：节点类型 / 属性与选项 / 部件槽。
  *  纪律由后端强制（code 不可变、软停用、引用计数、DAG、可选属性"无"选项禁令），
  *  此页只做呈现与触发。 */
+import { Right, Search, Top } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 
 import { api } from '../api/client'
 
@@ -95,25 +96,54 @@ async function saveEdit() {
   ElMessage.success('已保存（操作已记录审计）')
 }
 
-// ---- 节点类型拖拽排序 ----
-const dragIndex = ref<number | null>(null)
+// ---- 左栏分组 + 搜索 ----
+const search = ref('')
+const GROUP_DEFS = [
+  { key: 'products', label: '整机品类', match: (t: any) => t.kind === 'product' },
+  { key: 'sellableParts', label: '可单卖配件', match: (t: any) => t.kind === 'part' && t.is_sellable_root },
+  { key: 'commonParts', label: '通用部件', match: (t: any) => t.kind === 'part' && !t.is_sellable_root },
+]
+const grouped = computed<Record<string, any[]>>(() => {
+  const kw = search.value.trim().toLowerCase()
+  const hit = (t: any) => !kw || t.name.toLowerCase().includes(kw) || (t.code ?? '').toLowerCase().includes(kw)
+  const r: Record<string, any[]> = {}
+  for (const g of GROUP_DEFS) r[g.key] = types.value.filter((t) => g.match(t) && hit(t))
+  return r
+})
 
-function onDragStart(idx: number) {
-  dragIndex.value = idx
+async function selectById(id: number) {
+  const t = types.value.find((x) => x.id === id)
+  if (t) await select(t)
 }
 
-async function onDrop(targetIdx: number) {
-  const from = dragIndex.value
-  dragIndex.value = null
-  if (from === null || from === targetIdx) return
-  const moved = types.value.splice(from, 1)[0]
-  types.value.splice(targetIdx, 0, moved)
-  await api.put('/template/node-types/reorder', { ids: types.value.map((t) => t.id) })
+// ---- 组内拖拽排序（搜索态禁用，避免丢失未显示项）；reorder 始终传全量顺序（组优先+组内序）----
+const drag = reactive({ group: '', idx: -1 })
+function onDragStart(group: string, idx: number) {
+  drag.group = group
+  drag.idx = idx
+}
+async function onDrop(group: string, targetIdx: number) {
+  const from = drag.idx
+  const fromGroup = drag.group
+  drag.idx = -1
+  if (search.value || fromGroup !== group || from < 0 || from === targetIdx) return
+  const arr = grouped.value[group].slice()
+  const moved = arr.splice(from, 1)[0]
+  arr.splice(targetIdx, 0, moved)
+  const ids: number[] = []
+  for (const g of GROUP_DEFS) {
+    const list = g.key === group ? arr : grouped.value[g.key]
+    ids.push(...list.map((t) => t.id))
+  }
+  await api.put('/template/node-types/reorder', { ids })
+  await loadTypes()
   ElMessage.success('排序已保存')
 }
 
 async function loadTypes() {
-  types.value = (await api.get('/template/node-types', { params: { include_inactive: true } })).data
+  types.value = (await api.get('/template/node-types', {
+    params: { include_inactive: true, with_counts: true },
+  })).data
 }
 
 async function select(t: any) {
@@ -135,6 +165,18 @@ async function createType() {
 }
 
 async function toggleTypeActive(t: any) {
+  // 反向归属预警：停用一个被上级共用的部件，会让上级在新配置里选不到它
+  if (t.is_active && t.parents?.length) {
+    try {
+      await ElMessageBox.confirm(
+        `「${t.name}」被 ${t.parents.length} 个上级总成（${t.parents.map((p: any) => p.name).join('、')}）`
+        + '当部件引用，停用后这些上级在新配置里将选不到它（既有 SKU 不受影响）。确认停用？',
+        '该部件被上级共用', { type: 'warning' },
+      )
+    } catch {
+      return
+    }
+  }
   await api.patch(`/template/node-types/${t.id}`, { is_active: !t.is_active })
   await loadTypes()
   if (selected.value?.id === t.id) await select(t)
@@ -218,25 +260,36 @@ function typeName(id: number) {
             <el-button size="small" type="primary" @click="typeDialog.visible = true">新建</el-button>
           </div>
         </template>
-        <div
-          v-for="(t, idx) in types" :key="t.id" class="type-item"
-          :class="{ active: selected?.id === t.id, inactive: !t.is_active, dragging: dragIndex === idx }"
-          draggable="true"
-          @click="select(t)"
-          @dragstart="onDragStart(idx)"
-          @dragover.prevent
-          @drop.prevent="onDrop(idx)"
-          @dragend="dragIndex = null"
-        >
-          <span class="drag-handle" title="拖动排序">⠿</span>
-          <el-tag size="small" :type="t.kind === 'product' ? 'success' : 'info'">
-            {{ t.kind === 'product' ? '品类' : '部件' }}
-          </el-tag>
-          {{ t.name }}
-          <small style="color: var(--el-text-color-secondary)">{{ t.code }}</small>
-        </div>
+        <el-input v-model="search" placeholder="搜索名称 / 编码" clearable size="small" style="margin-bottom: 8px">
+          <template #prefix><el-icon><Search /></el-icon></template>
+        </el-input>
+        <template v-for="g in GROUP_DEFS" :key="g.key">
+          <div v-if="grouped[g.key].length" class="side-group">
+            {{ g.label }} <span class="gcnt">{{ grouped[g.key].length }}</span>
+          </div>
+          <div
+            v-for="(t, idx) in grouped[g.key]" :key="t.id" class="type-item"
+            :class="{ active: selected?.id === t.id, inactive: !t.is_active, dragging: drag.group === g.key && drag.idx === idx }"
+            :draggable="!search"
+            @click="select(t)"
+            @dragstart="onDragStart(g.key, idx)"
+            @dragover.prevent
+            @drop.prevent="onDrop(g.key, idx)"
+            @dragend="drag.idx = -1"
+          >
+            <span v-if="!search" class="drag-handle" title="拖动排序（组内）">⠿</span>
+            <span class="ti-name">{{ t.name }} <small style="color: var(--el-text-color-placeholder)">{{ t.code }}</small></span>
+            <span class="badges">
+              <el-tag v-if="t.sku_count" size="small" type="success" effect="plain" title="在售 SKU 数">{{ t.sku_count }}</el-tag>
+              <el-tag v-if="t.parent_count" size="small" type="warning" effect="plain" title="被几个上级引用">↑{{ t.parent_count }}</el-tag>
+              <span v-if="t.kind === 'part' && !t.parent_count" class="orphan" title="未被任何上级引用">未挂载</span>
+            </span>
+          </div>
+        </template>
+        <el-empty v-if="!grouped.products.length && !grouped.sellableParts.length && !grouped.commonParts.length"
+                  :image-size="50" description="无匹配" />
         <p style="font-size: 12px; color: var(--el-text-color-secondary); margin-top: 8px">
-          按住任意一行拖动可调整显示顺序（影响配置看板与筛选器的排列）
+          搜索定位 · 组内拖拽排序（搜索时暂停）· 徽标：绿=在售SKU，橙↑=被几个上级引用
         </p>
       </el-card>
     </el-col>
@@ -255,6 +308,25 @@ function typeName(id: number) {
             </span>
           </div>
         </template>
+
+        <!-- 反向归属：被哪些上级当部件引用（多对多，可点击跳进上级）-->
+        <el-card v-if="selected.kind === 'part' && selected.parents?.length" shadow="never"
+                 class="parents-card" body-style="padding: 10px 12px">
+          <div style="font-size: 13px; color: var(--el-color-warning); margin-bottom: 6px">
+            <el-icon style="vertical-align: -2px"><Top /></el-icon>
+            被用于 {{ selected.parents.length }} 个上级总成 — 停用或改名将波及它们
+          </div>
+          <el-tag
+            v-for="p in selected.parents" :key="p.id" class="parent-chip"
+            :type="p.is_active ? 'primary' : 'info'" effect="plain"
+            @click="selectById(p.id)"
+          >
+            {{ p.name }}<el-icon style="vertical-align: -2px; margin-left: 2px"><Right /></el-icon>
+          </el-tag>
+          <div style="font-size: 11px; color: var(--el-text-color-secondary); margin-top: 6px">
+            只读 · 解除引用请到对应上级停用该部件槽
+          </div>
+        </el-card>
 
         <h4>规格属性
           <el-button size="small" style="margin-left: 8px" @click="attrDialog.visible = true">+ 属性</el-button>
@@ -480,10 +552,27 @@ function typeName(id: number) {
 .type-item.active { background: var(--el-color-primary-light-9); }
 .type-item.inactive { opacity: 0.5; }
 .type-item.dragging { opacity: 0.4; border: 1px dashed var(--el-color-primary); }
+.type-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
 .drag-handle {
   cursor: grab;
   color: var(--el-text-color-placeholder);
-  margin-right: 4px;
   user-select: none;
+  flex-shrink: 0;
 }
+.ti-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.badges { display: flex; gap: 3px; align-items: center; flex-shrink: 0; }
+.orphan { font-size: 11px; color: var(--el-text-color-placeholder); }
+.side-group {
+  font-weight: 500;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  margin: 10px 0 2px;
+}
+.side-group .gcnt { color: var(--el-text-color-placeholder); }
+.parents-card { background: var(--el-color-warning-light-9); margin-bottom: 14px; }
+.parent-chip { cursor: pointer; margin: 0 6px 4px 0; }
 </style>

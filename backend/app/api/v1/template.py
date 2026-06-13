@@ -25,6 +25,7 @@ from app.schemas.template import (
     OptionIn,
     OptionOut,
     OptionUpdate,
+    ParentRefOut,
     SlotIn,
     SlotOut,
     SlotUpdate,
@@ -76,8 +77,18 @@ def list_node_types(
                 .group_by(Sku.root_type_id)
             ).all()
         )
+        # 反向归属计数：每个节点被几个不同上级当部件引用
+        pcounts = dict(
+            db.execute(
+                select(
+                    ComponentSlot.child_type_id,
+                    func.count(func.distinct(ComponentSlot.parent_type_id)),
+                ).group_by(ComponentSlot.child_type_id)
+            ).all()
+        )
         for item in out:
             item.sku_count = counts.get(item.id, 0)
+            item.parent_count = pcounts.get(item.id, 0)
     return out
 
 
@@ -91,10 +102,20 @@ def get_node_type(
         item = AttributeWithOptionsOut.model_validate(a)
         item.options = [OptionOut.model_validate(o) for o in a.options]
         attrs.append(item)
+    # 反向归属：本类型被哪些上级当部件引用（多对多，直接上级，去重）
+    # 取整实体再 distinct——SELECT DISTINCT 下 ORDER BY 列须在投影内，故不投影裸列
+    parent_rows = db.execute(
+        select(NodeType)
+        .join(ComponentSlot, ComponentSlot.parent_type_id == NodeType.id)
+        .where(ComponentSlot.child_type_id == type_id)
+        .distinct()
+        .order_by(NodeType.display_order)
+    ).scalars().all()
     return NodeTypeDetailOut(
         **NodeTypeOut.model_validate(nt).model_dump(),
         attributes=attrs,
         slots=[SlotOut.model_validate(s) for s in nt.slots],
+        parents=[ParentRefOut(id=p.id, name=p.name, is_active=p.is_active) for p in parent_rows],
     )
 
 

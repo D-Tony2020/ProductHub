@@ -30,7 +30,8 @@ class NodeTypeOut(BaseModel):
     is_sellable_root: bool
     display_order: int
     is_active: bool
-    sku_count: int | None = None  # 仅 with_counts=true 时填充（该品类在售 SKU 数）
+    sku_count: int | None = None     # 仅 with_counts=true 时填充（该品类在售 SKU 数）
+    parent_count: int | None = None  # 仅 with_counts=true 时填充（被几个上级当部件引用）
 
     model_config = {"from_attributes": True}
 
@@ -135,6 +136,14 @@ class AttributeWithOptionsOut(AttributeOut):
     options: list[OptionOut] = []
 
 
+class ParentRefOut(BaseModel):
+    id: int
+    name: str
+    is_active: bool
+
+
 class NodeTypeDetailOut(NodeTypeOut):
     attributes: list[AttributeWithOptionsOut] = []
     slots: list[SlotOut] = []
+    # 反向归属：本节点被哪些上级当部件引用（多对多，直接上级）
+    parents: list[ParentRefOut] = []
