@@ -71,8 +71,13 @@ class _WalkState:
         ))
 
 
-def _load_type(db: Session, type_id: int) -> NodeType | None:
-    return db.execute(
+def _load_type(
+    db: Session, type_id: int, cache: dict[int, "NodeType | None"] | None = None
+) -> NodeType | None:
+    # 请求级类型缓存：健康检测批量对多个 SKU 重算时，同类型只查一次（防 N+1 爆炸）
+    if cache is not None and type_id in cache:
+        return cache[type_id]
+    nt = db.execute(
         select(NodeType)
         .where(NodeType.id == type_id)
         .options(
@@ -80,6 +85,9 @@ def _load_type(db: Session, type_id: int) -> NodeType | None:
             selectinload(NodeType.slots),
         )
     ).scalar_one_or_none()
+    if cache is not None:
+        cache[type_id] = nt
+    return nt
 
 
 def _walk(
@@ -90,6 +98,7 @@ def _walk(
     depth: int,
     state: _WalkState,
     lenient: bool = False,
+    type_cache: dict | None = None,
 ) -> str | None:
     """校验一个白盒节点并返回其规范化序列化串；存在问题时返回 None。
 
@@ -229,7 +238,7 @@ def _walk(
             state.error(sub_path, f"部件「{slot.name}」选择了逐项配置但未提供配置内容")
             ok = False
             continue
-        child_type = _load_type(db, slot.child_type_id)
+        child_type = _load_type(db, slot.child_type_id, type_cache)
         if child_type is None:
             state.error(sub_path, f"部件类型不存在（node_type_id={slot.child_type_id}）")
             ok = False
@@ -243,7 +252,7 @@ def _walk(
                             family="supply")
                 ok = False
                 continue
-        child_serial = _walk(db, child_type, sel.child, sub_path, depth + 1, state, lenient)
+        child_serial = _walk(db, child_type, sel.child, sub_path, depth + 1, state, lenient, type_cache)
         if child_serial is None:
             ok = False
             continue
@@ -286,15 +295,17 @@ def matched_sku_payload(db: Session, sku: Sku) -> MatchedSku:
 
 
 def validate_config(
-    db: Session, payload: ConfigPayload, *, for_creation: bool = False, lenient: bool = False
+    db: Session, payload: ConfigPayload, *, for_creation: bool = False, lenient: bool = False,
+    type_cache: dict | None = None,
 ) -> tuple[ValidateResult, str | None]:
     """校验配置；完整时返回指纹与命中 SKU。无副作用。
 
     返回 (结果, 摘要名)；摘要名仅在完整时有意义。
     lenient=True（健康检测）：supply 类不阻断、complete 时仍把 supply issues 带回（供分族）。
+    type_cache：批量健康检测时跨 SKU 复用类型查询，防 N+1。
     """
     state = _WalkState()
-    root_type = _load_type(db, payload.root_type_id)
+    root_type = _load_type(db, payload.root_type_id, type_cache)
     if root_type is None or not root_type.is_active:
         state.error("ROOT", "根品类不存在或已停用")
         return ValidateResult(complete=False, issues=state.issues), None
@@ -302,7 +313,7 @@ def validate_config(
         state.error("ROOT", f"「{root_type.name}」不可作为可售品类的根")
         return ValidateResult(complete=False, issues=state.issues), None
 
-    serial = _walk(db, root_type, payload.root, "ROOT", 1, state, lenient)
+    serial = _walk(db, root_type, payload.root, "ROOT", 1, state, lenient, type_cache)
     if serial is None:
         return ValidateResult(complete=False, issues=state.issues), None
 

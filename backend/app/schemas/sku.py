@@ -102,6 +102,7 @@ class SkuStatsOut(BaseModel):
     pending_price: int   # 在售但无现价（待录价工作堆）
     new_this_week: int   # 近 7 天新增的在售 SKU
     stale_30d: int       # 在售有价、现价已生效超过 30 天未动（提醒复审）
+    incomplete: int = 0  # 在售但因模板演化变残缺/含停用件（待治理工作堆，红+黄合计）
 
 
 class PriceIn(BaseModel):

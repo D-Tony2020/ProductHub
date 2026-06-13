@@ -66,10 +66,13 @@ def reconstruct_payload(sku: Sku) -> ConfigPayload:
     return ConfigPayload(root_type_id=root.node_type_id, root=to_node_in(root))
 
 
-def compute_health(db: Session, sku: Sku) -> SkuHealth:
-    """对一个已落库 SKU 跑健康体检，返回三族分桶。唯一权威来源：列表/统计/报价闸/详情共用。"""
+def compute_health(db: Session, sku: Sku, type_cache: dict | None = None) -> SkuHealth:
+    """对一个已落库 SKU 跑健康体检，返回三族分桶。唯一权威来源：列表/统计/报价闸/详情共用。
+
+    type_cache：批量场景（列表/统计）传入一个共享 dict，跨 SKU 复用类型查询防 N+1。
+    """
     payload = reconstruct_payload(sku)
-    result, _ = validate_config(db, payload, lenient=True)
+    result, _ = validate_config(db, payload, lenient=True, type_cache=type_cache)
 
     fam = HealthFamilies()
     for issue in result.issues:

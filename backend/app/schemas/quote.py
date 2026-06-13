@@ -41,6 +41,7 @@ class QuoteItemOut(BaseModel):
     line_note: str | None
     price_changed: bool = False  # 现价与快照不一致（导出前提示）
     current_price: Decimal | None = None
+    supply_warnings: list[str] = []  # 加入时该 SKU 的 supply 提醒（含停用/停产件），仅当次回填
 
     model_config = {"from_attributes": True}
 

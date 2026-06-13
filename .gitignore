@@ -25,6 +25,7 @@ tmp/
 exports/
 backups/
 *.dump
+backend/uploads/
 
 # 编辑器/系统
 .vscode/

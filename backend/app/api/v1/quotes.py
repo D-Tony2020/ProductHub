@@ -26,6 +26,7 @@ from app.schemas.quote import (
 )
 from app.services.codes import next_code
 from app.services.config_engine import _current_prices
+from app.services.health_engine import compute_health, load_sku_for_health
 from app.services.template_service import get_or_404
 
 router = APIRouter(prefix="/quotes", tags=["quotes"])
@@ -128,6 +129,19 @@ def add_item(
     sku = get_or_404(db, Sku, body.sku_id)
     if sku.status != "active":
         raise HTTPException(409, f"SKU {sku.sku_code} 已作废，不可加入报价单")
+    # 完整性硬闸（先于价格，是 SKU 本体缺陷）：缺必选/必配或违反互斥组的残货焊在货架内出不了门
+    health = compute_health(db, load_sku_for_health(db, sku.id))
+    if health.blocking:
+        fams = health.families
+        first = (fams.completeness or fams.structural)[0]
+        raise HTTPException(409, detail={
+            "code": "INCOMPLETE_SKU",
+            "family": "completeness" if fams.completeness else "structural",
+            "sku_code": sku.sku_code,
+            "message": f"SKU {sku.sku_code} 配置不完整（{first.message}），不能加入报价单，请先治理",
+            "issues": [{"path": i.path, "family": i.family, "message": i.message}
+                       for i in fams.completeness + fams.structural],
+        })
     current = next(
         (p.price for p in _current_prices(db, sku.id) if p.currency == quote.currency), None
     )
@@ -146,7 +160,14 @@ def add_item(
             QuoteItem(sku_id=sku.id, qty=body.qty, snapshot_price=current, unit_price=current)
         )
     db.commit()
-    return _quote_out(db, quote)
+    result = _quote_out(db, quote)
+    # supply 软提醒（含停用/停产件）：仅当次加入/合并的那行回填，列表态不逐行重算
+    if health.families.supply:
+        warns = [i.message for i in health.families.supply]
+        for it in result.items:
+            if it.sku_id == sku.id:
+                it.supply_warnings = warns
+    return result
 
 
 @router.patch("/{quote_id}/items/{item_id}", response_model=QuoteOut)

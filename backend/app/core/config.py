@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     default_currency: str = "USD"
     # 配置树最大深度：DAG 防环之外的纵深防御
     max_config_depth: int = 10
+    # 业务时区：固定每个连接的会话时区，使 CURRENT_DATE/now()(视图、现价口径)
+    # 与应用侧 date.today() 同口径，避免容器 UTC 与本地差日导致"当天录价当天报不了"
+    db_timezone: str = "Asia/Shanghai"
 
 
 @lru_cache

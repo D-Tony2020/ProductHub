@@ -42,7 +42,11 @@ api.interceptors.response.use(
       localStorage.removeItem('refresh_token')
       router.push('/login')
     } else if (response?.status !== 422 && response?.data?.detail) {
-      ElMessage.error(String(response.data.detail))
+      const detail = response.data.detail
+      // 结构化错误（detail 为对象，如 {code:'INCOMPLETE_SKU', message}）交由调用方处理，
+      // 避免 String(对象) 显示成 [object Object]；普通字符串错误仍全局兜底提示。
+      if (typeof detail === 'string') ElMessage.error(detail)
+      else if (detail?.message && !detail?.code) ElMessage.error(String(detail.message))
     }
     return Promise.reject(error)
   },

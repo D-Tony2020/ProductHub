@@ -5,7 +5,14 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import get_settings
 
-engine = create_engine(get_settings().database_url, pool_pre_ping=True)
+_settings = get_settings()
+# 固定会话时区为业务时区：CURRENT_DATE/now() 与应用侧 date.today() 同口径，
+# 杜绝容器 UTC 与本地差日导致的现价视图边界漏算（录价当天报不了）。psycopg3 连接选项。
+engine = create_engine(
+    _settings.database_url,
+    pool_pre_ping=True,
+    connect_args={"options": f"-c timezone={_settings.db_timezone}"},
+)
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /** SKU 库（货架，默认首页）：统计带 + 品类树 + 卡片/表格双视图 + 详情抽屉。
  *  P1：统计与计数走聚合端点，检索复用 /skus，零数据层改动。 */
-import { CopyDocument, Goods, Grid, List } from '@element-plus/icons-vue'
+import { CopyDocument, Goods, Grid, List, WarningFilled } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -19,7 +19,7 @@ const filters = reactive({
   q: '', root_type_id: null as number | null, status: null as string | null,
   option_id: [] as number[], purchased_part_id: null as number | null, mine: false,
 })
-const stats = ref({ active: 0, pending_price: 0, new_this_week: 0, stale_30d: 0 })
+const stats = ref({ active: 0, pending_price: 0, new_this_week: 0, stale_30d: 0, incomplete: 0 })
 const tree = ref<{ products: any[]; parts: any[] }>({ products: [], parts: [] })
 const filterAttrs = ref<any[]>([])
 const rows = ref<any[]>([])
@@ -34,9 +34,25 @@ watch(viewMode, (v) => localStorage.setItem('sku_view_mode', v))
 const activeQuick = computed(() => {
   if (filters.mine) return 'mine'
   if (filters.status === 'pending_price') return 'pending'
+  if (filters.status === 'incomplete') return 'incomplete'
   if (!filters.root_type_id && !filters.status && !filters.q && !filters.option_id.length) return 'all'
   return ''
 })
+
+/** 健康徽标：incomplete=红(待治理)，supply_warn=黄(含停用件)，ok/未知=无。 */
+function healthTag(s: any): { type: 'danger' | 'warning'; text: string } | null {
+  if (s.health_status === 'incomplete') return { type: 'danger', text: '待治理' }
+  if (s.health_status === 'supply_warn') return { type: 'warning', text: '含停用件' }
+  return null
+}
+
+/** 加入报价单禁用原因（null=可加入）。完整性优先于待录价，黄色 supply 不拦。 */
+function addDisabledReason(s: any): string | null {
+  if (s.status !== 'active') return '已作废 SKU 不可报价'
+  if (s.health_status === 'incomplete') return '配置不完整（缺必选项/必配部件或违反互斥组），需先治理后才能报价'
+  if (!s.current_prices?.length) return '待录价，录入现价后才能加入报价单'
+  return null
+}
 
 const drawer = reactive({ visible: false, sku: null as any, prices: [] as any[] })
 
@@ -100,12 +116,12 @@ watch([() => filters.q, () => filters.status, () => filters.option_id, () => fil
 watch(page, () => void load())
 
 // ---- 快捷视图 / 品类树 ----
-function selectQuick(kind: 'all' | 'pending' | 'mine') {
+function selectQuick(kind: 'all' | 'pending' | 'mine' | 'incomplete') {
   filters.q = ''
   filters.option_id = []
   filters.root_type_id = null
   filterAttrs.value = []
-  filters.status = kind === 'pending' ? 'pending_price' : null
+  filters.status = kind === 'pending' ? 'pending_price' : kind === 'incomplete' ? 'incomplete' : null
   filters.mine = kind === 'mine'
 }
 function selectCategory(id: number) {
@@ -123,8 +139,15 @@ async function openDetailById(id: number) {
 
 async function addToQuote(sku: any) {
   const r = await cart.addSku(sku.id, 1)
-  if (r.ok) ElMessage.success('已加入当前报价单')
-  else if (r.message === 'NO_ACTIVE') {
+  if (r.ok) {
+    if (r.warnings?.length) {
+      ElMessage({ type: 'warning', duration: 6000,
+        message: `已加入，但请注意：${r.warnings.join('；')}` })
+    } else ElMessage.success('已加入当前报价单')
+  } else if (r.code === 'INCOMPLETE_SKU') {
+    // 后端硬闸兜底（正常情况下按钮已禁用，理论不可达）
+    ElMessage({ type: 'error', duration: 6000, message: r.message || '该 SKU 配置不完整，已被拦截' })
+  } else if (r.message === 'NO_ACTIVE') {
     ElMessage.warning('请先到「报价单」页新建/选择草稿单')
     router.push('/quotations')
   } else ElMessage.error(r.message!)
@@ -226,6 +249,11 @@ function renderTreeText(node: any, depth = 0): string[] {
       <div class="stat-label">30 天未调价</div>
       <div class="stat-value">{{ stats.stale_30d }}</div>
     </div>
+    <div class="stat-card clickable" :class="{ danger: stats.incomplete > 0 }"
+         @click="selectQuick('incomplete')">
+      <div class="stat-label">待治理 <el-icon><WarningFilled /></el-icon></div>
+      <div class="stat-value">{{ stats.incomplete }}</div>
+    </div>
   </div>
 
   <el-row :gutter="12">
@@ -239,6 +267,10 @@ function renderTreeText(node: any, depth = 0): string[] {
         <div class="side-item" :class="{ active: activeQuick === 'pending' }" @click="selectQuick('pending')">
           待录价
           <el-tag v-if="stats.pending_price" size="small" type="warning">{{ stats.pending_price }}</el-tag>
+        </div>
+        <div class="side-item" :class="{ active: activeQuick === 'incomplete' }" @click="selectQuick('incomplete')">
+          待治理
+          <el-tag v-if="stats.incomplete" size="small" type="danger">{{ stats.incomplete }}</el-tag>
         </div>
         <div class="side-item" :class="{ active: activeQuick === 'mine' }" @click="selectQuick('mine')">
           我创建的
@@ -297,11 +329,17 @@ function renderTreeText(node: any, depth = 0): string[] {
                 <b v-if="priceText(row)" class="price">{{ priceText(row) }}</b>
                 <el-tag v-else type="warning" size="small">待录价</el-tag>
                 <el-tag v-if="row.status === 'retired'" type="info" size="small">已作废</el-tag>
+                <el-tag v-if="healthTag(row)" :type="healthTag(row)!.type" size="small" effect="dark">
+                  {{ healthTag(row)!.text }}
+                </el-tag>
               </div>
               <div class="sku-actions" @click.stop>
-                <el-button size="small" type="primary"
-                           :disabled="!row.current_prices?.length || row.status !== 'active'"
-                           @click="addToQuote(row)">加入报价单</el-button>
+                <el-tooltip :disabled="!addDisabledReason(row)" :content="addDisabledReason(row) || ''" placement="top">
+                  <span>
+                    <el-button size="small" type="primary" :disabled="!!addDisabledReason(row)"
+                               @click="addToQuote(row)">加入报价单</el-button>
+                  </span>
+                </el-tooltip>
                 <el-button v-if="auth.canSetPrice" size="small" @click="openPriceDialog(row)">改价</el-button>
                 <span style="flex: 1"></span>
                 <el-tooltip content="以此为模板复制配置一个新 SKU" placement="top">
@@ -324,18 +362,23 @@ function renderTreeText(node: any, depth = 0): string[] {
               <el-tag v-else type="warning" size="small">待录价</el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="状态" width="80">
+          <el-table-column label="状态" width="130">
             <template #default="{ row }">
               <el-tag :type="row.status === 'active' ? 'success' : 'info'" size="small">
                 {{ row.status === 'active' ? '在售' : '已作废' }}
               </el-tag>
+              <el-tag v-if="healthTag(row)" :type="healthTag(row)!.type" size="small" effect="dark"
+                      style="margin-left: 4px">{{ healthTag(row)!.text }}</el-tag>
             </template>
           </el-table-column>
           <el-table-column label="操作" width="240">
             <template #default="{ row }">
-              <el-button size="small" type="primary"
-                         :disabled="!row.current_prices?.length || row.status !== 'active'"
-                         @click.stop="addToQuote(row)">加入报价单</el-button>
+              <el-tooltip :disabled="!addDisabledReason(row)" :content="addDisabledReason(row) || ''" placement="top">
+                <span>
+                  <el-button size="small" type="primary" :disabled="!!addDisabledReason(row)"
+                             @click.stop="addToQuote(row)">加入报价单</el-button>
+                </span>
+              </el-tooltip>
               <el-button v-if="auth.canSetPrice" size="small" @click.stop="openPriceDialog(row)">改价</el-button>
               <el-tooltip content="以此为模板复制配置一个新 SKU" placement="top">
                 <el-button size="small" text :icon="CopyDocument" aria-label="以此再配置"
@@ -365,6 +408,24 @@ function renderTreeText(node: any, depth = 0): string[] {
         </span>
         <el-tag v-else type="warning" style="margin-left: 12px">待录价</el-tag>
       </p>
+      <el-alert
+        v-if="drawer.sku.health && drawer.sku.health.status !== 'ok'"
+        :type="drawer.sku.health.blocking ? 'error' : 'warning'"
+        :closable="false" show-icon style="margin-bottom: 12px"
+      >
+        <template #title>
+          {{ drawer.sku.health.blocking
+            ? '配置不完整：不可加入报价单，需先治理'
+            : '含停用 / 停产件：可报价，但请留意供货风险' }}
+        </template>
+        <ul class="health-issues">
+          <li v-for="(it, i) in [
+            ...drawer.sku.health.families.completeness,
+            ...drawer.sku.health.families.structural,
+            ...drawer.sku.health.families.supply,
+          ]" :key="i">{{ it.message }}</li>
+        </ul>
+      </el-alert>
       <el-tabs>
         <el-tab-pane label="产品构成（事实视图）">
           <pre style="font-family: inherit; line-height: 1.9; white-space: pre-wrap">{{
@@ -396,10 +457,12 @@ function renderTreeText(node: any, depth = 0): string[] {
         </el-tab-pane>
       </el-tabs>
       <div style="display: flex; gap: 8px; margin-top: 12px">
-        <el-button
-          type="primary" :disabled="!drawer.sku.current_prices?.length || drawer.sku.status !== 'active'"
-          @click="addToQuote(drawer.sku)"
-        >加入报价单</el-button>
+        <el-tooltip :disabled="!addDisabledReason(drawer.sku)" :content="addDisabledReason(drawer.sku) || ''" placement="top">
+          <span>
+            <el-button type="primary" :disabled="!!addDisabledReason(drawer.sku)"
+                       @click="addToQuote(drawer.sku)">加入报价单</el-button>
+          </span>
+        </el-tooltip>
         <el-button @click="router.push({ path: '/configure', query: { sku_id: drawer.sku.id } })">
           以此为模板再配置
         </el-button>
@@ -461,7 +524,7 @@ function renderTreeText(node: any, depth = 0): string[] {
 <style scoped>
 .stat-band {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 10px;
   margin-bottom: 12px;
 }
@@ -474,6 +537,8 @@ function renderTreeText(node: any, depth = 0): string[] {
 .stat-card.clickable { cursor: pointer; }
 .stat-card.clickable:hover { border-color: var(--el-color-primary); }
 .stat-card.warn { background: var(--el-color-warning-light-9); }
+.stat-card.danger { background: var(--el-color-danger-light-9); }
+.stat-card.danger:hover { border-color: var(--el-color-danger); }
 .stat-label { font-size: 12px; color: var(--el-text-color-secondary); }
 .stat-value { font-size: 24px; font-weight: 500; margin-top: 2px; }
 
@@ -519,4 +584,5 @@ function renderTreeText(node: any, depth = 0): string[] {
   background: var(--el-fill-color-lighter); border-radius: 6px; padding: 6px 8px;
 }
 :deep(.price-superseded) { opacity: 0.55; }
+.health-issues { margin: 4px 0 0; padding-left: 18px; font-size: 13px; line-height: 1.7; }
 </style>

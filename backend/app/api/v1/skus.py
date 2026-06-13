@@ -27,21 +27,24 @@ from app.schemas.sku import (
     SkuCreateIn,
     SkuCreateResult,
     SkuDetailOut,
+    SkuHealth,
     SkuListOut,
     SkuNodeOut,
     SkuOut,
     SkuStatsOut,
 )
 from app.services.config_engine import _current_prices, create_sku
+from app.services.health_engine import compute_health, load_sku_for_health
 from app.services.template_service import get_or_404
 
 router = APIRouter(prefix="/skus", tags=["skus"])
 
 
-def _sku_out(db: Session, sku: Sku) -> SkuOut:
+def _sku_out(db: Session, sku: Sku, health_status: str | None = None) -> SkuOut:
     out = SkuOut.model_validate(sku, from_attributes=True)
     out.root_type_name = sku.root_type.name if sku.root_type else ""
     out.current_prices = _current_prices(db, sku.id)
+    out.health_status = health_status  # 由调用方实时推导填入（列表/详情）
     return out
 
 
@@ -99,7 +102,7 @@ def create(
 def search(
     q: str | None = Query(default=None, max_length=200),
     root_type_id: int | None = None,
-    status: str | None = Query(default=None, pattern=r"^(active|retired|pending_price)$"),
+    status: str | None = Query(default=None, pattern=r"^(active|retired|pending_price|incomplete)$"),
     option_id: list[int] = Query(default=[]),
     purchased_part_id: int | None = None,
     page: int = Query(default=1, ge=1),
@@ -122,6 +125,9 @@ def search(
             Sku.status == "active",
             ~Sku.id.in_(select(sql_text("sku_id")).select_from(sql_text("v_sku_current_price"))),
         )
+    elif status == "incomplete":
+        # 残货 = active 且健康检测非 ok（实时推导，无法 SQL 下推，末尾特殊处理）
+        stmt = stmt.where(Sku.status == "active")
     elif status is not None:
         stmt = stmt.where(Sku.status == status)
     for oid in option_id:
@@ -141,11 +147,25 @@ def search(
                 )
             )
         )
+    # 健康检测要遍历配置树，预取避免 N+1；type_cache 跨 SKU 复用类型查询
+    stmt = stmt.options(selectinload(Sku.nodes).selectinload(SkuConfigNode.attribute_values))
+    type_cache: dict = {}
+    if status == "incomplete":
+        # 实时推导：候选 active 全量 → 算 health → 过滤残货 → Python 分页
+        scored = [(s, compute_health(db, s, type_cache))
+                  for s in db.execute(stmt.order_by(Sku.id.desc())).scalars().all()]
+        residual = [(s, h) for s, h in scored if h.status != "ok"]
+        total = len(residual)
+        page_rows = residual[(page - 1) * page_size: page * page_size]
+        return SkuListOut(total=total, items=[_sku_out(db, s, h.status) for s, h in page_rows])
     total = db.execute(select(func.count()).select_from(stmt.subquery())).scalar_one()
     rows = db.execute(
         stmt.order_by(Sku.id.desc()).offset((page - 1) * page_size).limit(page_size)
     ).scalars().all()
-    return SkuListOut(total=total, items=[_sku_out(db, s) for s in rows])
+    return SkuListOut(
+        total=total,
+        items=[_sku_out(db, s, compute_health(db, s, type_cache).status) for s in rows],
+    )
 
 
 @router.get("/stats", response_model=SkuStatsOut)
@@ -175,8 +195,16 @@ def stats(db: Session = Depends(get_db), _: AppUser = Depends(get_current_user))
             (SkuPrice.valid_to.is_(None)) | (SkuPrice.valid_to >= today),
         )
     ).scalar_one()
+    # 待治理（残货）：在售且健康检测非 ok（红 completeness/structural + 黄 supply）
+    active_skus = db.execute(
+        select(Sku)
+        .options(selectinload(Sku.nodes).selectinload(SkuConfigNode.attribute_values))
+        .where(Sku.status == "active")
+    ).scalars().all()
+    tc: dict = {}
+    incomplete = sum(1 for s in active_skus if compute_health(db, s, tc).status != "ok")
     return SkuStatsOut(active=active, pending_price=pending,
-                       new_this_week=new_week, stale_30d=stale)
+                       new_this_week=new_week, stale_30d=stale, incomplete=incomplete)
 
 
 @router.get("/export")
@@ -224,11 +252,22 @@ def detail(
     if sku is None:
         raise HTTPException(404, f"SKU {sku_id} 不存在")
     root = next((n for n in sku.nodes if n.parent_node_id is None), None)
+    health = compute_health(db, sku)
     out = SkuDetailOut(
-        **_sku_out(db, sku).model_dump(),
+        **_sku_out(db, sku, health.status).model_dump(),
         config_tree=_node_out(db, root) if root else None,
+        health=health,
     )
     return out
+
+
+@router.get("/{sku_id}/health", response_model=SkuHealth)
+def health(sku_id: int, db: Session = Depends(get_db), _: AppUser = Depends(get_current_user)):
+    """SKU 在最新模板下的健康体检（三族）。实时推导、不碰指纹。"""
+    sku = load_sku_for_health(db, sku_id)
+    if sku is None:
+        raise HTTPException(404, f"SKU {sku_id} 不存在")
+    return compute_health(db, sku)
 
 
 @router.post("/{sku_id}/retire", response_model=SkuOut)

@@ -71,4 +71,6 @@ def test_stats_route_not_shadowed(client, template):
     admin = login(client, "admin", "admin@Test2026")
     r = client.get("/api/v1/skus/stats", headers=admin)
     assert r.status_code == 200
-    assert set(r.json().keys()) == {"active", "pending_price", "new_this_week", "stale_30d"}
+    assert set(r.json().keys()) == {
+        "active", "pending_price", "new_this_week", "stale_30d", "incomplete",
+    }
