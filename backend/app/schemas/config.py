@@ -31,6 +31,13 @@ class ValidationIssue(BaseModel):
     path: str  # 槽 code 路径，如 "ROOT/VALVE"
     kind: Literal["error", "missing"]
     message: str
+    # 健康检测三族标注（M1）：缺必选/必配=completeness，违反互斥组=structural，
+    # 用了停用/合并件=supply；None=数据异常（compute_health 兜底归 structural）。
+    family: Literal["completeness", "structural", "supply"] | None = None
+    # 仅 supply 族填：区分停用选项/停用部件/已合并/已停用件，供前端文案分流。
+    supply_kind: (
+        Literal["option_disabled", "part_disabled", "part_merged", "part_retired"] | None
+    ) = None
 
 
 class CurrentPrice(BaseModel):

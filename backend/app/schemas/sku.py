@@ -1,9 +1,12 @@
 from datetime import datetime
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
 from app.schemas.config import ConfigPayload, CurrentPrice
+
+HealthStatus = Literal["ok", "incomplete", "supply_warn"]
 
 
 class SkuCreateIn(BaseModel):
@@ -46,12 +49,40 @@ class SkuOut(BaseModel):
     fingerprint: str
     current_prices: list[CurrentPrice] = []
     created_at: datetime | None = None
+    # 健康状态(M1)：ok / incomplete(红,缺必选或违反互斥) / supply_warn(黄,含停用件)。
+    # 由端点实时推导填充，非 ORM 列。
+    health_status: HealthStatus | None = None
 
     model_config = {"from_attributes": True}
 
 
+class HealthIssue(BaseModel):
+    family: Literal["completeness", "structural", "supply"]
+    path: str
+    message: str
+    supply_kind: str | None = None
+
+
+class HealthFamilies(BaseModel):
+    completeness: list[HealthIssue] = []
+    structural: list[HealthIssue] = []
+    supply: list[HealthIssue] = []
+
+
+class SkuHealth(BaseModel):
+    """SKU 在最新模板下的健康体检（实时推导，不碰指纹）。"""
+
+    sku_id: int
+    sku_code: str
+    status: HealthStatus
+    blocking: bool       # completeness 或 structural 非空 → 不可加入报价单
+    quotable: bool       # = not blocking
+    families: HealthFamilies
+
+
 class SkuDetailOut(SkuOut):
     config_tree: SkuNodeOut | None = None
+    health: SkuHealth | None = None
 
 
 class SkuCreateResult(BaseModel):

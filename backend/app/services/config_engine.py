@@ -53,11 +53,22 @@ class _WalkState:
     # (节点序列化串, 展示名片段) 仅在该子树完全合法且完整时非 None
     summary_parts: list[str] = field(default_factory=list)
 
-    def error(self, path: str, message: str) -> None:
-        self.issues.append(ValidationIssue(path=path, kind="error", message=message))
+    def error(self, path: str, message: str, family: str | None = None) -> None:
+        self.issues.append(
+            ValidationIssue(path=path, kind="error", message=message, family=family)
+        )
 
     def missing(self, path: str, message: str) -> None:
-        self.issues.append(ValidationIssue(path=path, kind="missing", message=message))
+        # 缺失类一律 completeness（缺必选属性 / 必配槽 / 互斥组未选）
+        self.issues.append(
+            ValidationIssue(path=path, kind="missing", message=message, family="completeness")
+        )
+
+    def supply(self, path: str, message: str, supply_kind: str) -> None:
+        # 用了停用/合并件：lenient 健康检测下不阻断、仅黄色供给提醒
+        self.issues.append(ValidationIssue(
+            path=path, kind="error", message=message, family="supply", supply_kind=supply_kind,
+        ))
 
 
 def _load_type(db: Session, type_id: int) -> NodeType | None:
@@ -78,8 +89,14 @@ def _walk(
     path: str,
     depth: int,
     state: _WalkState,
+    lenient: bool = False,
 ) -> str | None:
-    """校验一个白盒节点并返回其规范化序列化串；存在问题时返回 None。"""
+    """校验一个白盒节点并返回其规范化序列化串；存在问题时返回 None。
+
+    lenient=True（健康检测）：supply 类问题（用了停用选项/合并停用件/停用部件类型）
+    不阻断、仍按已存值算指纹，只收集为 supply 提醒——用于对既有 SKU 的事后体检。
+    lenient=False（默认，落库/导入路径）：行为逐字节不变，supply 类仍硬拒。
+    """
     settings = get_settings()
     if depth > settings.max_config_depth:
         state.error(path, f"配置层级超过上限 {settings.max_config_depth}")
@@ -118,9 +135,14 @@ def _walk(
             ok = False
             continue
         if not option.is_active:
-            state.error(path, f"选项已停用，不可用于新配置：{attr.name}={option.label}")
-            ok = False
-            continue
+            if lenient:
+                state.supply(path, f"含已停用选项：{attr.name}={option.label}", "option_disabled")
+                # 残货按已存值算指纹：不阻断，落到下面照常写 token
+            else:
+                state.error(path, f"选项已停用，不可用于新配置：{attr.name}={option.label}",
+                            family="supply")
+                ok = False
+                continue
         attr_tokens.append((attr.code, f"{attr.code}={option.code}"))
         state.summary_parts.append(option.label)
 
@@ -158,6 +180,7 @@ def _walk(
                 path,
                 f"「{gname}」只能选择一种，当前选了 {len(chosen)} 个："
                 + "、".join(s.name for s in chosen),
+                family="structural",
             )
             ok = False
 
@@ -187,9 +210,16 @@ def _walk(
                 ok = False
                 continue
             if part.status not in ("draft", "active"):
-                state.error(sub_path, f"成品件「{part.name}」已合并或停用，不可用于新配置")
-                ok = False
-                continue
+                if lenient:
+                    skind = "part_merged" if part.status == "merged" else "part_retired"
+                    verb = "已合并" if part.status == "merged" else "已停用"
+                    state.supply(sub_path, f"成品件「{part.name}」{verb}", skind)
+                    # 残货按已存件算指纹：不阻断，照常写 token
+                else:
+                    state.error(sub_path, f"成品件「{part.name}」已合并或停用，不可用于新配置",
+                                family="supply")
+                    ok = False
+                    continue
             child_tokens.append((slot.code, f"{slot.code}:P:{part.code}"))
             state.summary_parts.append(part.name)
             continue
@@ -200,11 +230,20 @@ def _walk(
             ok = False
             continue
         child_type = _load_type(db, slot.child_type_id)
-        if child_type is None or not child_type.is_active:
-            state.error(sub_path, f"部件类型不可用（node_type_id={slot.child_type_id}）")
+        if child_type is None:
+            state.error(sub_path, f"部件类型不存在（node_type_id={slot.child_type_id}）")
             ok = False
             continue
-        child_serial = _walk(db, child_type, sel.child, sub_path, depth + 1, state)
+        if not child_type.is_active:
+            if lenient:
+                state.supply(sub_path, f"部件类型「{child_type.name}」已停用", "part_disabled")
+                # 残货继续按已存子配置算指纹
+            else:
+                state.error(sub_path, f"部件类型不可用（node_type_id={slot.child_type_id}）",
+                            family="supply")
+                ok = False
+                continue
+        child_serial = _walk(db, child_type, sel.child, sub_path, depth + 1, state, lenient)
         if child_serial is None:
             ok = False
             continue
@@ -247,11 +286,12 @@ def matched_sku_payload(db: Session, sku: Sku) -> MatchedSku:
 
 
 def validate_config(
-    db: Session, payload: ConfigPayload, *, for_creation: bool = False
+    db: Session, payload: ConfigPayload, *, for_creation: bool = False, lenient: bool = False
 ) -> tuple[ValidateResult, str | None]:
     """校验配置；完整时返回指纹与命中 SKU。无副作用。
 
     返回 (结果, 摘要名)；摘要名仅在完整时有意义。
+    lenient=True（健康检测）：supply 类不阻断、complete 时仍把 supply issues 带回（供分族）。
     """
     state = _WalkState()
     root_type = _load_type(db, payload.root_type_id)
@@ -262,7 +302,7 @@ def validate_config(
         state.error("ROOT", f"「{root_type.name}」不可作为可售品类的根")
         return ValidateResult(complete=False, issues=state.issues), None
 
-    serial = _walk(db, root_type, payload.root, "ROOT", 1, state)
+    serial = _walk(db, root_type, payload.root, "ROOT", 1, state, lenient)
     if serial is None:
         return ValidateResult(complete=False, issues=state.issues), None
 
@@ -275,7 +315,8 @@ def validate_config(
     name = f"{root_type.name}（{summary}）" if summary else root_type.name
     result = ValidateResult(
         complete=True,
-        issues=[],
+        # lenient 下残货能算出指纹但仍带 supply 提醒；非 lenient 完整即清空
+        issues=state.issues if lenient else [],
         fingerprint=fingerprint,
         matched_sku=matched_sku_payload(db, existing) if existing else None,
     )
