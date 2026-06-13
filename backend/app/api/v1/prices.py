@@ -2,7 +2,7 @@
 
 EXCLUDE 约束兜底并发与期重叠；本路由不提供任何 UPDATE price 入口。
 """
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
@@ -31,6 +31,7 @@ def _price_out(db: Session, p: SkuPrice) -> PriceOut:
         note=p.note,
         created_by_name=creator.display_name if creator else None,
         created_at=p.created_at.isoformat() if p.created_at else None,
+        superseded=p.superseded_at is not None,
     )
 
 
@@ -60,24 +61,26 @@ def set_price(
     currency = body.currency or get_settings().default_currency
     valid_from = date.fromisoformat(body.valid_from) if body.valid_from else date.today()
 
-    # 关闭当前开放价（valid_to 为空且生效中）：止于新价前一天
+    # 当前开放价（valid_to 为空、未作废）：跨日改价止于新价前一天
     open_price = db.execute(
         select(SkuPrice).where(
             SkuPrice.sku_id == sku_id,
             SkuPrice.currency == currency,
             SkuPrice.valid_to.is_(None),
+            SkuPrice.superseded_at.is_(None),
         )
     ).scalar_one_or_none()
     before = None
     action = "set_price"
+    superseded_old: SkuPrice | None = None
     if open_price is not None:
         before = {"price": str(open_price.price), "valid_from": open_price.valid_from.isoformat()}
         if open_price.valid_from == valid_from:
-            # 同日纠错：手滑录错必须能当天改。日颗粒度下旧记录无法闭区间收尾
-            # （valid_to < valid_from 违反约束），故对"只追加"做受控例外：
-            # 删除当日错误记录，原值完整保留在审计 before_json 中。
+            # 同日纠错：软作废旧行（真 append-only，物理保留可追溯），由部分 EXCLUDE
+            # 约束放行同日新行；superseded_by 在新行落库后回填。
             action = "correct_price"
-            db.delete(open_price)
+            open_price.superseded_at = datetime.now()
+            superseded_old = open_price
             db.flush()
         elif open_price.valid_from > valid_from:
             raise HTTPException(
@@ -98,6 +101,8 @@ def set_price(
     except IntegrityError:
         db.rollback()
         raise HTTPException(409, "价格生效期与既有记录重叠（数据库排他约束拒绝），请刷新后重试")
+    if superseded_old is not None:
+        superseded_old.superseded_by = new_price.id  # 回填取代关系，留痕可追溯
     write_audit(db, actor_id=user.id, action=action, entity_type="sku",
                 entity_id=sku_id, before=before,
                 after={"price": str(body.price), "currency": currency,

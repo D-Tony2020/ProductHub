@@ -130,15 +130,38 @@ async function addToQuote(sku: any) {
   } else ElMessage.error(r.message!)
 }
 
-async function setPrice(sku: any) {
-  const { value } = await (await import('element-plus')).ElMessageBox.prompt(
-    `为 ${sku.sku_code} 录入新价（USD）。改价只追加不覆盖，历史全量保留。`, '录入价格',
-    { inputPattern: /^\d+(\.\d{1,4})?$/, inputErrorMessage: '请输入合法金额' },
-  )
-  await api.post(`/skus/${sku.id}/prices`, { price: value })
-  ElMessage.success('价格已生效')
-  await Promise.all([load(), loadStats()])
-  if (drawer.visible && drawer.sku?.id === sku.id) await openDetailById(sku.id)
+// 录价对话框（方案 A）：产品全貌卡片 + 图片位 + 完整表单（价/币种/生效日/备注）
+const priceDialog = reactive({
+  visible: false, sku: null as any, submitting: false,
+  form: { price: '', currency: 'USD', valid_from: '', note: '' },
+})
+function openPriceDialog(sku: any) {
+  priceDialog.sku = sku
+  priceDialog.form = {
+    price: '', currency: sku.current_prices?.[0]?.currency || 'USD', valid_from: '', note: '',
+  }
+  priceDialog.visible = true
+}
+async function submitPrice() {
+  if (!/^\d+(\.\d{1,4})?$/.test(priceDialog.form.price)) {
+    ElMessage.warning('请输入合法金额（最多 4 位小数）')
+    return
+  }
+  priceDialog.submitting = true
+  try {
+    await api.post(`/skus/${priceDialog.sku.id}/prices`, {
+      price: priceDialog.form.price,
+      currency: priceDialog.form.currency,
+      valid_from: priceDialog.form.valid_from || undefined,
+      note: priceDialog.form.note || undefined,
+    })
+    ElMessage.success('价格已生效')
+    priceDialog.visible = false
+    await Promise.all([load(), loadStats()])
+    if (drawer.visible && drawer.sku?.id === priceDialog.sku.id) await openDetailById(priceDialog.sku.id)
+  } catch { /* 拦截器已提示 */ } finally {
+    priceDialog.submitting = false
+  }
 }
 
 function exportList() {
@@ -339,18 +362,26 @@ function renderTreeText(node: any, depth = 0): string[] {
           }}</pre>
         </el-tab-pane>
         <el-tab-pane label="价格历史">
-          <el-table :data="drawer.prices">
-            <el-table-column prop="price" label="单价" width="110" />
-            <el-table-column prop="currency" label="币种" width="70" />
-            <el-table-column prop="valid_from" label="生效日" width="110" />
-            <el-table-column prop="valid_to" label="失效日" width="110">
+          <el-table :data="drawer.prices"
+                    :row-class-name="({ row }) => (row.superseded ? 'price-superseded' : '')">
+            <el-table-column label="状态" width="80">
+              <template #default="{ row }">
+                <el-tag v-if="row.superseded" size="small" type="info">已作废</el-tag>
+                <el-tag v-else-if="!row.valid_to" size="small" type="success">生效</el-tag>
+                <el-tag v-else size="small">历史</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="price" label="单价" width="100" />
+            <el-table-column prop="currency" label="币种" width="64" />
+            <el-table-column prop="valid_from" label="生效日" width="106" />
+            <el-table-column prop="valid_to" label="失效日" width="106">
               <template #default="{ row }">{{ row.valid_to ?? '长期' }}</template>
             </el-table-column>
-            <el-table-column prop="created_by_name" label="录入人" width="100" />
+            <el-table-column prop="created_by_name" label="录入人" width="90" />
             <el-table-column prop="note" label="备注" />
           </el-table>
           <p style="color: var(--el-text-color-secondary); font-size: 12px">
-            价格记录只追加不覆盖；历史永久可查。
+            价格只追加不覆盖；同日纠错的旧价标"已作废"灰显、物理保留可追溯。
           </p>
         </el-tab-pane>
       </el-tabs>
@@ -362,10 +393,59 @@ function renderTreeText(node: any, depth = 0): string[] {
         <el-button @click="router.push({ path: '/configure', query: { sku_id: drawer.sku.id } })">
           以此为模板再配置
         </el-button>
-        <el-button v-if="auth.canSetPrice" @click="setPrice(drawer.sku)">录入新价</el-button>
+        <el-button v-if="auth.canSetPrice" @click="openPriceDialog(drawer.sku)">录入新价</el-button>
       </div>
     </template>
   </el-drawer>
+
+  <!-- 录价对话框：产品全貌卡片 + 图片位 + 完整表单 -->
+  <el-dialog v-model="priceDialog.visible" title="录入价格" width="640">
+    <template v-if="priceDialog.sku">
+      <div style="display: flex; gap: 12px; margin-bottom: 14px">
+        <div class="price-thumb">
+          <el-icon :size="30"><Goods /></el-icon>
+          <div style="font-size: 11px; margin-top: 4px">图片待上传</div>
+        </div>
+        <div style="flex: 1; min-width: 0">
+          <div style="font-weight: 500">{{ priceDialog.sku.sku_code }}</div>
+          <div style="font-size: 12px; color: var(--el-text-color-secondary)">{{ priceDialog.sku.name }}</div>
+          <pre class="tree-mini">{{
+            priceDialog.sku.config_tree ? renderTreeText(priceDialog.sku.config_tree).join('\n') : '（构成略）'
+          }}</pre>
+        </div>
+      </div>
+      <el-alert
+        v-if="priceText(priceDialog.sku)" type="info" :closable="false"
+        :title="`当前现行价：${priceText(priceDialog.sku)}`" style="margin-bottom: 12px"
+      />
+      <el-form label-width="90px">
+        <el-form-item label="价格" required>
+          <el-input v-model="priceDialog.form.price" placeholder="数字，最多 4 位小数" style="width: 200px" />
+        </el-form-item>
+        <el-form-item label="币种">
+          <el-select v-model="priceDialog.form.currency" style="width: 120px">
+            <el-option value="USD" /><el-option value="CNY" /><el-option value="EUR" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="生效日期">
+          <el-date-picker
+            v-model="priceDialog.form.valid_from" type="date" value-format="YYYY-MM-DD"
+            placeholder="缺省=今天" style="width: 200px"
+          />
+        </el-form-item>
+        <el-form-item label="备注">
+          <el-input v-model="priceDialog.form.note" type="textarea" :rows="2" placeholder="可空" />
+        </el-form-item>
+      </el-form>
+      <p style="font-size: 12px; color: var(--el-text-color-secondary)">
+        同日改价视为纠错：旧价作废保留可追溯、不覆盖历史；跨日改价为正常追加。
+      </p>
+    </template>
+    <template #footer>
+      <el-button @click="priceDialog.visible = false">取消</el-button>
+      <el-button type="primary" :loading="priceDialog.submitting" @click="submitPrice">确认录入</el-button>
+    </template>
+  </el-dialog>
 </template>
 
 <style scoped>
@@ -417,4 +497,16 @@ function renderTreeText(node: any, depth = 0): string[] {
 .sku-foot { display: flex; align-items: center; gap: 6px; min-height: 24px; }
 .sku-foot .price { color: var(--el-color-success); font-size: 16px; }
 .sku-actions { display: flex; gap: 4px; margin-top: 8px; }
+
+.price-thumb {
+  width: 80px; height: 80px; flex-shrink: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  background: var(--el-fill-color-light); border-radius: 8px; color: var(--el-text-color-secondary);
+}
+.tree-mini {
+  font-family: inherit; font-size: 12px; line-height: 1.7; white-space: pre-wrap;
+  margin: 6px 0 0; max-height: 140px; overflow: auto;
+  background: var(--el-fill-color-lighter); border-radius: 6px; padding: 6px 8px;
+}
+:deep(.price-superseded) { opacity: 0.55; }
 </style>

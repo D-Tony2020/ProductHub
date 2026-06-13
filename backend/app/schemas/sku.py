@@ -90,6 +90,7 @@ class PriceOut(BaseModel):
     note: str | None
     created_by_name: str | None = None
     created_at: str | None = None
+    superseded: bool = False  # 同日纠错被取代的作废行（历史展示灰显，不计现价）
 
 
 SkuNodeOut.model_rebuild()

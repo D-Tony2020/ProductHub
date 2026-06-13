@@ -224,6 +224,7 @@ def _current_prices(db: Session, sku_id: int) -> list[CurrentPrice]:
         select(SkuPrice)
         .where(
             SkuPrice.sku_id == sku_id,
+            SkuPrice.superseded_at.is_(None),  # 软作废行不进现价（防错价泄漏进报价）
             SkuPrice.valid_from <= today,
             (SkuPrice.valid_to.is_(None)) | (SkuPrice.valid_to >= today),
         )

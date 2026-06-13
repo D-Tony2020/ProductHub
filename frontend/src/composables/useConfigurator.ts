@@ -57,6 +57,12 @@ export function getTypeMeta(typeId: number): TypeMeta | null {
   return typeCache.get(typeId) ?? null
 }
 
+/** 清空类型元数据缓存：进入配置看板时调用，确保拿到管理员最新改过的模板
+ *  （必选/部件槽变更立即生效）。单次配置会话内仍缓存，避免重复拉同类型。 */
+export function clearTypeCache(): void {
+  typeCache.clear()
+}
+
 export async function loadType(typeId: number): Promise<TypeMeta> {
   if (typeCache.has(typeId)) return typeCache.get(typeId)!
   const { data } = await api.get(`/template/node-types/${typeId}`)

@@ -10,7 +10,8 @@ import { useRoute, useRouter } from 'vue-router'
 import { api } from '../api/client'
 import PartPicker from '../components/PartPicker.vue'
 import {
-  fromSkuTree, getTypeMeta, loadType, localProgress, newNodeState, toPayload, useValidator,
+  clearTypeCache, fromSkuTree, getTypeMeta, loadType, localProgress, newNodeState,
+  toPayload, useValidator,
   type NodeState, type SlotMeta, type TypeMeta,
 } from '../composables/useConfigurator'
 import { useAuthStore } from '../stores/auth'
@@ -34,6 +35,7 @@ const { validating, result, trigger } = useValidator()
 
 onMounted(async () => {
   try {
+    clearTypeCache()  // 进入配置看板先清缓存，确保模板最新（必选/部件槽变更立即生效）
     const { data } = await api.get('/template/node-types')
     // 凡可售根均可作配置起点：整机品类 + 单卖配件（如客户单卖筒体/阀门）
     rootTypes.value = data.filter((t: any) => t.is_sellable_root)

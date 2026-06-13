@@ -40,7 +40,9 @@ def test_same_day_price_correction(client, template):
     r = client.post(f"/api/v1/skus/{sku['id']}/prices", json={"price": "10.5"}, headers=headers)
     assert r.status_code == 201, r.text
     hist = client.get(f"/api/v1/skus/{sku['id']}/prices", headers=headers).json()
-    assert len(hist) == 1 and hist[0]["price"] == "10.5000"  # 错误记录被顶替，不留脏行
+    # 录价 A 起改为软作废（真 append-only）：旧行保留(作废) + 新行生效，共 2 条
+    active = [h for h in hist if not h["superseded"]]
+    assert len(hist) == 2 and len(active) == 1 and active[0]["price"] == "10.5000"
     # 回溯覆盖仍被拒
     r = client.post(f"/api/v1/skus/{sku['id']}/prices",
                     json={"price": "8", "valid_from": "2020-01-01"}, headers=headers)
