@@ -64,6 +64,15 @@ class SkuListOut(BaseModel):
     items: list[SkuOut]
 
 
+class SkuStatsOut(BaseModel):
+    """SKU 库统计带：货架口径的四个关键数。"""
+
+    active: int          # 在售且有现价（货架上能报的货）
+    pending_price: int   # 在售但无现价（待录价工作堆）
+    new_this_week: int   # 近 7 天新增的在售 SKU
+    stale_30d: int       # 在售有价、现价已生效超过 30 天未动（提醒复审）
+
+
 class PriceIn(BaseModel):
     # 上限对齐 Numeric(14,4) 容量，超限在入参层拦截而非数据库 500
     price: Decimal = Field(ge=0, le=Decimal("9999999999.9999"))

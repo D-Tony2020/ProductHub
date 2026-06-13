@@ -30,6 +30,7 @@ class NodeTypeOut(BaseModel):
     is_sellable_root: bool
     display_order: int
     is_active: bool
+    sku_count: int | None = None  # 仅 with_counts=true 时填充（该品类在售 SKU 数）
 
     model_config = {"from_attributes": True}
 

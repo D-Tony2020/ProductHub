@@ -5,7 +5,7 @@
 """
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -56,13 +56,29 @@ def _apply_updates(obj, body) -> dict:
 @router.get("/node-types", response_model=list[NodeTypeOut])
 def list_node_types(
     include_inactive: bool = False,
+    with_counts: bool = False,
     db: Session = Depends(get_db),
     _: AppUser = Depends(get_current_user),
 ):
     stmt = select(NodeType).order_by(NodeType.display_order, NodeType.id)
     if not include_inactive:
         stmt = stmt.where(NodeType.is_active.is_(True))
-    return db.execute(stmt).scalars().all()
+    rows = db.execute(stmt).scalars().all()
+    out = [NodeTypeOut.model_validate(nt) for nt in rows]
+    if with_counts:
+        # 每个品类在售 SKU 数（一次分组查询，O(1) 而非 N+1）
+        from app.models import Sku
+
+        counts = dict(
+            db.execute(
+                select(Sku.root_type_id, func.count())
+                .where(Sku.status == "active")
+                .group_by(Sku.root_type_id)
+            ).all()
+        )
+        for item in out:
+            item.sku_count = counts.get(item.id, 0)
+    return out
 
 
 @router.get("/node-types/{type_id}", response_model=NodeTypeDetailOut)

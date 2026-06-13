@@ -1,11 +1,12 @@
 """SKU：创建（配置落库）、检索（动态属性筛选）、详情（只读配置树+价格史）、作废/恢复、清单导出。"""
 import io
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
 from sqlalchemy import func, select
+from sqlalchemy import text as sql_text
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.audit import write_audit
@@ -18,6 +19,7 @@ from app.models import (
     Sku,
     SkuAttributeValue,
     SkuConfigNode,
+    SkuPrice,
 )
 from app.schemas.config import CurrentPrice
 from app.schemas.sku import (
@@ -28,6 +30,7 @@ from app.schemas.sku import (
     SkuListOut,
     SkuNodeOut,
     SkuOut,
+    SkuStatsOut,
 )
 from app.services.config_engine import _current_prices, create_sku
 from app.services.template_service import get_or_404
@@ -101,10 +104,13 @@ def search(
     purchased_part_id: int | None = None,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
+    mine: bool = False,
     db: Session = Depends(get_db),
-    _: AppUser = Depends(get_current_user),
+    user: AppUser = Depends(get_current_user),
 ):
     stmt = select(Sku)
+    if mine:
+        stmt = stmt.where(Sku.created_by == user.id)
     if q:
         like = f"%{q}%"
         stmt = stmt.where(Sku.sku_code.ilike(like) | Sku.name.ilike(like))
@@ -112,8 +118,6 @@ def search(
         stmt = stmt.where(Sku.root_type_id == root_type_id)
     if status == "pending_price":
         # 待录价 = active 且无现行价（推导态，无冗余状态字段）
-        from sqlalchemy import text as sql_text
-
         stmt = stmt.where(
             Sku.status == "active",
             ~Sku.id.in_(select(sql_text("sku_id")).select_from(sql_text("v_sku_current_price"))),
@@ -142,6 +146,37 @@ def search(
         stmt.order_by(Sku.id.desc()).offset((page - 1) * page_size).limit(page_size)
     ).scalars().all()
     return SkuListOut(total=total, items=[_sku_out(db, s) for s in rows])
+
+
+@router.get("/stats", response_model=SkuStatsOut)
+def stats(db: Session = Depends(get_db), _: AppUser = Depends(get_current_user)):
+    """SKU 库统计带：货架口径四个数。须声明在 /skus/{sku_id} 之前以免被动态路由捕获。"""
+    has_price = select(sql_text("sku_id")).select_from(sql_text("v_sku_current_price"))
+    active = db.execute(
+        select(func.count()).select_from(Sku)
+        .where(Sku.status == "active", Sku.id.in_(has_price))
+    ).scalar_one()
+    pending = db.execute(
+        select(func.count()).select_from(Sku)
+        .where(Sku.status == "active", ~Sku.id.in_(has_price))
+    ).scalar_one()
+    new_week = db.execute(
+        select(func.count()).select_from(Sku)
+        .where(Sku.status == "active", Sku.created_at >= datetime.now() - timedelta(days=7))
+    ).scalar_one()
+    today = date.today()
+    # 在售且"当前生效价"的生效日已满 30 天：提醒管理者复审久未动价的货
+    stale = db.execute(
+        select(func.count(func.distinct(SkuPrice.sku_id)))
+        .select_from(SkuPrice).join(Sku, Sku.id == SkuPrice.sku_id)
+        .where(
+            Sku.status == "active",
+            SkuPrice.valid_from <= today - timedelta(days=30),
+            (SkuPrice.valid_to.is_(None)) | (SkuPrice.valid_to >= today),
+        )
+    ).scalar_one()
+    return SkuStatsOut(active=active, pending_price=pending,
+                       new_this_week=new_week, stale_30d=stale)
 
 
 @router.get("/export")
