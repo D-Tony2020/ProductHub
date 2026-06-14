@@ -42,12 +42,14 @@ class PurchasedPartIn(BaseModel):
     new_supplier_name: str | None = Field(default=None, max_length=200)
     name: str = Field(min_length=1, max_length=200)
     spec_note: str | None = None
+    lead_time_days: int | None = Field(default=None, ge=0, le=3650)  # 缺省由供应商默认预填
 
 
 class PurchasedPartUpdate(BaseModel):
     name: str | None = Field(default=None, max_length=200)
     spec_note: str | None = None
     spec_config: dict | None = None  # 灰盒结构化规格(可选配置树)；传入即覆盖
+    lead_time_days: int | None = Field(default=None, ge=0, le=3650)
 
 
 class PurchasedPartOut(BaseModel):
@@ -61,11 +63,19 @@ class PurchasedPartOut(BaseModel):
     spec_note: str | None
     spec_config: dict | None = None   # 灰盒结构化规格
     spec_summary: str = ""            # spec_config 渲染的可读摘要（展示用）
+    lead_time_days: int | None = None  # 参考交期(天)
     status: str
     merged_into_id: int | None
     reference_count: int = 0
 
     model_config = {"from_attributes": True}
+
+
+class PartSpecUpdate(BaseModel):
+    """仅灰盒规格(spec_note/spec_config)，对所有登录用户开放(规格仅描述、不入指纹)。"""
+
+    spec_note: str | None = None
+    spec_config: dict | None = None
 
 
 class MergeIn(BaseModel):

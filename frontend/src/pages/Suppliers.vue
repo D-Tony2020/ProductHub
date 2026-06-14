@@ -149,7 +149,7 @@ async function submitCreate() {
             <el-tag v-if="!s.is_active" size="small" type="info">已停用</el-tag>
             <el-rate v-if="s.rating" :model-value="s.rating" disabled size="small" style="height: 16px" />
           </div>
-          <div class="sup-meta">{{ s.code }}<span v-if="s.lead_time_days"> · 参考交期 {{ s.lead_time_days }}天</span></div>
+          <div class="sup-meta">{{ s.code }}<span v-if="s.lead_time_days"> · 默认交期 {{ s.lead_time_days }}天</span></div>
         </div>
         <el-empty v-if="!filtered.length" :image-size="50" description="无供应商" />
       </el-card>
@@ -181,7 +181,7 @@ async function submitCreate() {
               <el-descriptions-item label="名称">{{ selected.name }}</el-descriptions-item>
               <el-descriptions-item label="编码">{{ selected.code }}</el-descriptions-item>
               <el-descriptions-item label="联系方式">{{ selected.contact || '—' }}</el-descriptions-item>
-              <el-descriptions-item label="参考交期">{{ selected.lead_time_days != null ? `${selected.lead_time_days} 天` : '—' }}</el-descriptions-item>
+              <el-descriptions-item label="默认参考交期">{{ selected.lead_time_days != null ? `${selected.lead_time_days} 天` : '—' }}</el-descriptions-item>
               <el-descriptions-item label="付款条件">{{ selected.payment_terms || '—' }}</el-descriptions-item>
               <el-descriptions-item label="评级">
                 <el-rate v-if="selected.rating" :model-value="selected.rating" disabled />
@@ -189,13 +189,16 @@ async function submitCreate() {
               </el-descriptions-item>
             </el-descriptions>
             <p style="color: var(--el-text-color-secondary); font-size: 12px; margin-top: 8px">
-              参考交期为该供应商的<b>标称默认值</b>（用于报价估发货期、横向比选供应商、卷算整机交期），
-              <b>非每批订单的实际承诺</b>——每批实际交期随数量/排产而变，属采购订单层。付款条件为关系级标准条款。
+              <b>默认参考交期</b>为该供应商的标称默认值，新建采购件时预填、每件可覆盖（权威值在件上）；
+              <b>非每批订单的实际承诺</b>。付款条件/评级为关系级条款。
             </p>
           </el-tab-pane>
 
           <el-tab-pane label="成品采购件" name="parts">
-            <PartsTable :supplier-id="selected.id" @changed="loadSuppliers(selected.id)" />
+            <PartsTable
+              :supplier-id="selected.id" :supplier-default-lead="selected.lead_time_days"
+              @changed="loadSuppliers(selected.id)"
+            />
           </el-tab-pane>
 
           <el-tab-pane label="关联成品" name="skus">
@@ -212,9 +215,9 @@ async function submitCreate() {
     <el-form label-width="90px">
       <el-form-item label="名称" required><el-input v-model="editForm.name" /></el-form-item>
       <el-form-item label="联系方式"><el-input v-model="editForm.contact" placeholder="联系人 / 电话（可空）" /></el-form-item>
-      <el-form-item label="参考交期">
+      <el-form-item label="默认参考交期">
         <el-input-number v-model="editForm.lead_time_days" :min="0" :max="3650" placeholder="天" /> 天
-        <span style="margin-left: 8px; font-size: 12px; color: var(--el-text-color-secondary)">标称默认值，非每批承诺</span>
+        <span style="margin-left: 8px; font-size: 12px; color: var(--el-text-color-secondary)">新建采购件预填，件可覆盖</span>
       </el-form-item>
       <el-form-item label="付款条件"><el-input v-model="editForm.payment_terms" placeholder="如 30% 预付，70% 见提单" /></el-form-item>
       <el-form-item label="评级"><el-rate v-model="editForm.rating" clearable /></el-form-item>
@@ -230,9 +233,9 @@ async function submitCreate() {
     <el-form label-width="90px">
       <el-form-item label="名称" required><el-input v-model="createDialog.form.name" placeholder="如 华消（编码自动生成）" /></el-form-item>
       <el-form-item label="联系方式"><el-input v-model="createDialog.form.contact" placeholder="联系人 / 电话（可空）" /></el-form-item>
-      <el-form-item label="参考交期">
+      <el-form-item label="默认参考交期">
         <el-input-number v-model="createDialog.form.lead_time_days" :min="0" :max="3650" placeholder="天" /> 天
-        <span style="margin-left: 8px; font-size: 12px; color: var(--el-text-color-secondary)">标称默认值，非每批承诺</span>
+        <span style="margin-left: 8px; font-size: 12px; color: var(--el-text-color-secondary)">新建采购件预填，件可覆盖</span>
       </el-form-item>
       <el-form-item label="付款条件"><el-input v-model="createDialog.form.payment_terms" placeholder="可空" /></el-form-item>
       <el-form-item label="评级"><el-rate v-model="createDialog.form.rating" clearable /></el-form-item>

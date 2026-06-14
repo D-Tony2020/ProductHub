@@ -11,7 +11,7 @@ import { useAuthStore } from '../stores/auth'
 
 const router = useRouter()
 
-const props = defineProps<{ supplierId?: number | null }>()
+const props = defineProps<{ supplierId?: number | null; supplierDefaultLead?: number | null }>()
 const emit = defineEmits<{ (e: 'changed'): void }>()
 
 const auth = useAuthStore()
@@ -73,7 +73,14 @@ async function merge(row: any) {
 }
 
 // 在当前供应商下新建采购件
-const createDialog = reactive({ visible: false, form: { name: '', node_type_id: null as number | null } })
+const createDialog = reactive({
+  visible: false,
+  form: { name: '', node_type_id: null as number | null, lead_time_days: null as number | null },
+})
+function openCreate() {
+  createDialog.form = { name: '', node_type_id: null, lead_time_days: props.supplierDefaultLead ?? null }
+  createDialog.visible = true
+}
 async function submitCreate() {
   if (!createDialog.form.name || !createDialog.form.node_type_id) {
     ElMessage.warning('请填写件名并选择部件类型')
@@ -84,9 +91,9 @@ async function submitCreate() {
       node_type_id: createDialog.form.node_type_id,
       supplier_id: props.supplierId,
       name: createDialog.form.name,
+      lead_time_days: createDialog.form.lead_time_days,
     })
     createDialog.visible = false
-    createDialog.form = { name: '', node_type_id: null }
     ElMessage.success('已新建')
     await load(); emit('changed')
   } catch { /* 拦截器提示 */ }
@@ -116,7 +123,7 @@ const statusMap: Record<string, { label: string; type: string }> = {
         v-model="filters.q" :placeholder="scoped ? '件名' : '供应商 / 件名'" clearable style="width: 200px"
       />
       <span style="flex: 1"></span>
-      <el-button v-if="scoped && auth.isAdmin" type="primary" @click="createDialog.visible = true">
+      <el-button v-if="scoped && auth.isAdmin" type="primary" @click="openCreate">
         + 在该供应商下新建采购件
       </el-button>
     </div>
@@ -124,8 +131,11 @@ const statusMap: Record<string, { label: string; type: string }> = {
       <el-table-column prop="code" label="件号" width="120" />
       <el-table-column prop="name" label="件名" min-width="170" />
       <el-table-column v-if="!scoped" prop="supplier_name" label="供应商" width="130" />
-      <el-table-column prop="node_type_name" label="部件类型" width="110" />
-      <el-table-column prop="reference_count" label="被引用 SKU" width="100" />
+      <el-table-column prop="node_type_name" label="部件类型" width="100" />
+      <el-table-column label="参考交期" width="90">
+        <template #default="{ row }">{{ row.lead_time_days != null ? `${row.lead_time_days} 天` : '—' }}</template>
+      </el-table-column>
+      <el-table-column prop="reference_count" label="被引用" width="74" />
       <el-table-column label="状态" width="100">
         <template #default="{ row }">
           <el-tag :type="statusMap[row.status]?.type as any" size="small">
@@ -136,7 +146,7 @@ const statusMap: Record<string, { label: string; type: string }> = {
           </div>
         </template>
       </el-table-column>
-      <el-table-column v-if="auth.isAdmin" label="状态/规格" width="110">
+      <el-table-column label="规格" width="100">
         <template #default="{ row }">
           <el-button
             v-if="['draft', 'active'].includes(row.status)" size="small" text type="primary"
@@ -165,6 +175,10 @@ const statusMap: Record<string, { label: string; type: string }> = {
           <el-select v-model="createDialog.form.node_type_id" filterable style="width: 100%" placeholder="选择部件类型">
             <el-option v-for="t in nodeTypes" :key="t.id" :value="t.id" :label="t.name" />
           </el-select>
+        </el-form-item>
+        <el-form-item label="参考交期">
+          <el-input-number v-model="createDialog.form.lead_time_days" :min="0" :max="3650" placeholder="天" /> 天
+          <span style="margin-left: 8px; font-size: 12px; color: var(--el-text-color-secondary)">缺省取供应商默认交期</span>
         </el-form-item>
       </el-form>
       <template #footer>

@@ -14,6 +14,7 @@ from app.core.security import get_current_user, require_admin
 from app.models import AppUser, NodeType, PurchasedPart, SkuConfigNode, Supplier
 from app.schemas.parts import (
     MergeIn,
+    PartSpecUpdate,
     PurchasedPartIn,
     PurchasedPartOut,
     PurchasedPartUpdate,
@@ -164,12 +165,15 @@ def create_part(
         raise HTTPException(422, "必须指定供应商或提供新供应商名称")
 
     name = " ".join(body.name.split())  # 归一化空白，降低"同名异写"重复建档
+    # 参考交期：件上未给则用供应商默认交期预填（权威值仍在件上、可后续覆盖）
+    lead_time = body.lead_time_days if body.lead_time_days is not None else supplier.lead_time_days
     part = PurchasedPart(
         code=next_code(db, "PP"),
         node_type_id=nt.id,
         supplier_id=supplier.id,
         name=name,
         spec_note=body.spec_note,
+        lead_time_days=lead_time,
         status="draft" if user.role != "admin" else "active",
         created_by=user.id,
     )
@@ -200,6 +204,25 @@ def update_part(
         setattr(part, field, " ".join(value.split()) if field == "name" else value)
     write_audit(db, actor_id=admin.id, action="update", entity_type="purchased_part",
                 entity_id=part.id, before=before, after=body.model_dump(exclude_unset=True))
+    db.commit()
+    return _part_out(db, part)
+
+
+@router.patch("/purchased-parts/{part_id}/spec", response_model=PurchasedPartOut)
+def update_part_spec(
+    part_id: int, body: PartSpecUpdate,
+    db: Session = Depends(get_db), user: AppUser = Depends(get_current_user),
+):
+    """编辑成品件的灰盒规格(spec_note/spec_config)。规格仅描述、不入指纹，故对所有登录用户开放
+    (区别于改名/治理的 admin 门)，让现场建 draft 件的业务员也能补规格。"""
+    part = get_or_404(db, PurchasedPart, part_id)
+    if part.status not in ("draft", "active"):
+        raise HTTPException(409, "已合并/停用的件不可编辑规格")
+    part.spec_note = body.spec_note
+    part.spec_config = body.spec_config
+    write_audit(db, actor_id=user.id, action="update_spec", entity_type="purchased_part",
+                entity_id=part.id,
+                after={"spec_note": body.spec_note, "has_spec_config": bool(body.spec_config)})
     db.commit()
     return _part_out(db, part)
 

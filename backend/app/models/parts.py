@@ -53,6 +53,8 @@ class PurchasedPart(Base, PkMixin, TimestampMixin):
         BigInteger, ForeignKey("supplier.id", ondelete="RESTRICT"), nullable=False
     )
     name: Mapped[str] = mapped_column(String(200), nullable=False)
+    # 参考交期(天)：每件各自的标称交期，权威值在件上；缺省由供应商默认交期预填、件可覆盖
+    lead_time_days: Mapped[int | None] = mapped_column(Integer)
     spec_note: Mapped[str | None] = mapped_column(Text)   # 纯文本自由规格（兜底）
     # 灰盒结构化规格：可选配置树(全不必配)，复用 ConfigPayload 形态，仅描述性元数据。
     # 🔴 永不入 SKU 指纹（件靠 code 选中，规格不参与身份）；JSONB 存、不结构化校验完整性。
@@ -78,5 +80,8 @@ class PurchasedPart(Base, PkMixin, TimestampMixin):
         ),
         CheckConstraint(
             "(status = 'merged') = (merged_into_id IS NOT NULL)", name="merged_target"
+        ),
+        CheckConstraint(
+            "lead_time_days IS NULL OR lead_time_days >= 0", name="lead_time_non_negative"
         ),
     )

@@ -427,7 +427,7 @@ async function saveSpec() {
   if (!rootState.value || !rootType.value || !partSpecId.value) return
   saving.value = true
   try {
-    await api.patch(`/purchased-parts/${partSpecId.value}`, {
+    await api.patch(`/purchased-parts/${partSpecId.value}/spec`, {
       spec_config: toPayload(rootType.value.id, rootState.value),
       spec_note: specNote.value || null,
     })
