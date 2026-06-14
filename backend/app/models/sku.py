@@ -85,6 +85,11 @@ class SkuConfigNode(Base, PkMixin):
     )
     mode: Mapped[str] = mapped_column(String(10), nullable=False)
     purchased_part_id: Mapped[int | None] = mapped_column(BigInteger)
+    # 采购溯源(供应商升级·方案甲)：白盒节点可标采购来源，供应商 code 入指纹（身份）。
+    # 黑盒节点供应商由 purchased_part 决定（已在指纹内），此列只对白盒(configured)生效。
+    supplier_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("supplier.id", ondelete="RESTRICT")
+    )
 
     sku: Mapped[Sku] = relationship(back_populates="nodes")
     parent: Mapped["SkuConfigNode | None"] = relationship(
@@ -103,6 +108,10 @@ class SkuConfigNode(Base, PkMixin):
     slot = relationship(
         "ComponentSlot", primaryjoin="SkuConfigNode.slot_id == ComponentSlot.id",
         foreign_keys=[slot_id], viewonly=True,
+    )
+    supplier = relationship(
+        "Supplier", primaryjoin="SkuConfigNode.supplier_id == Supplier.id",
+        foreign_keys=[supplier_id], viewonly=True,
     )
 
     __table_args__ = (

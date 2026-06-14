@@ -61,7 +61,7 @@ def reconstruct_payload(sku: Sku) -> ConfigPayload:
                 slots.append(SlotSelection(
                     slot_id=child.slot_id, mode="configured", child=to_node_in(child),
                 ))
-        return ConfigNodeIn(attributes=attrs, slots=slots)
+        return ConfigNodeIn(attributes=attrs, slots=slots, supplier_id=node.supplier_id)
 
     return ConfigPayload(root_type_id=root.node_type_id, root=to_node_in(root))
 

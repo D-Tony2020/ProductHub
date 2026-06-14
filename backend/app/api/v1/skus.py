@@ -68,6 +68,13 @@ def _node_out(db: Session, node: SkuConfigNode) -> SkuNodeOut:
             )
         )
     part = node.purchased_part
+    # 来源：黑盒由成品件供应商派生；白盒由节点级供应商标注（方案甲）
+    if part is not None:
+        supplier_id, supplier_name = part.supplier_id, part.supplier.name
+    elif node.supplier_id is not None:
+        supplier_id, supplier_name = node.supplier_id, node.supplier.name if node.supplier else None
+    else:
+        supplier_id, supplier_name = None, None
     return SkuNodeOut(
         id=node.id,
         slot_id=node.slot_id,
@@ -79,7 +86,8 @@ def _node_out(db: Session, node: SkuConfigNode) -> SkuNodeOut:
         mode=node.mode,
         purchased_part_id=part.id if part else None,
         purchased_part_name=part.name if part else None,
-        supplier_name=part.supplier.name if part else None,
+        supplier_id=supplier_id,
+        supplier_name=supplier_name,
         attributes=attrs,
         children=[
             _node_out(db, c)

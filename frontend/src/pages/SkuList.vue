@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /** SKU 库（货架，默认首页）：统计带 + 品类树 + 卡片/表格双视图 + 详情抽屉。
  *  P1：统计与计数走聚合端点，检索复用 /skus，零数据层改动。 */
-import { CopyDocument, EditPen, Goods, Grid, List, WarningFilled } from '@element-plus/icons-vue'
+import { CopyDocument, EditPen, Goods, Grid, List, Right, WarningFilled } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -236,6 +236,22 @@ function renderTreeText(node: any, depth = 0): string[] {
   }
   return lines
 }
+
+// 来源地图：把配置树摊成 部件→供应商 行（黑盒派生、白盒标注、未标注=缺口）
+function sourcingRows(tree: any): { label: string; supplier: string | null; black: boolean }[] {
+  const rows: { label: string; supplier: string | null; black: boolean }[] = []
+  function walk(node: any, isRoot: boolean) {
+    const label = node.slot_name || node.node_type_name
+    if (!isRoot) {
+      rows.push({ label, supplier: node.supplier_name ?? null, black: node.mode === 'purchased' })
+    } else if (node.supplier_name) {
+      rows.push({ label: `${node.node_type_name}（整机）`, supplier: node.supplier_name, black: false })
+    }
+    for (const c of node.children ?? []) walk(c, false)
+  }
+  walk(tree, true)
+  return rows
+}
 </script>
 
 <template>
@@ -464,6 +480,25 @@ function renderTreeText(node: any, depth = 0): string[] {
             drawer.sku.config_tree ? renderTreeText(drawer.sku.config_tree).join('\n') : '—'
           }}</pre>
         </el-tab-pane>
+        <el-tab-pane label="来源地图">
+          <div v-if="drawer.sku.config_tree" class="sourcing-map">
+            <div v-for="(r, i) in sourcingRows(drawer.sku.config_tree)" :key="i" class="src-row">
+              <span class="src-label">{{ r.label }}</span>
+              <span v-if="r.supplier" class="src-sup">
+                <el-tag size="small" :type="r.black ? 'info' : 'primary'" effect="plain">
+                  {{ r.black ? '成品件' : '标注' }}
+                </el-tag>
+                <el-icon style="vertical-align: -2px; margin: 0 4px"><Right /></el-icon>{{ r.supplier }}
+              </span>
+              <span v-else class="src-none">
+                <el-icon style="vertical-align: -2px; margin-right: 2px"><WarningFilled /></el-icon>未标注来源
+              </span>
+            </div>
+          </div>
+          <p style="color: var(--el-text-color-secondary); font-size: 12px; margin-top: 8px">
+            黑盒成品件来源由其供应商派生；白盒配置件来源为节点级标注（已入指纹，改来源生成新 SKU）。
+          </p>
+        </el-tab-pane>
         <el-tab-pane label="价格历史">
           <el-table :data="drawer.prices"
                     :row-class-name="({ row }) => (row.superseded ? 'price-superseded' : '')">
@@ -622,4 +657,12 @@ function renderTreeText(node: any, depth = 0): string[] {
 }
 :deep(.price-superseded) { opacity: 0.55; }
 .health-issues { margin: 4px 0 0; padding-left: 18px; font-size: 13px; line-height: 1.7; }
+.sourcing-map { display: flex; flex-direction: column; gap: 6px; }
+.src-row {
+  display: flex; align-items: center; justify-content: space-between;
+  background: var(--el-fill-color-lighter); border-radius: 6px; padding: 7px 11px;
+}
+.src-label { font-size: 13px; }
+.src-sup { font-size: 13px; color: var(--el-color-primary); }
+.src-none { font-size: 13px; color: var(--el-color-danger); }
 </style>

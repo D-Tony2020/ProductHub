@@ -26,6 +26,7 @@ from app.models import (
     SkuConfigNode,
     SkuPrice,
     ComponentSlot,
+    Supplier,
 )
 from app.schemas.config import (
     ConfigNodeIn,
@@ -258,12 +259,33 @@ def _walk(
             continue
         child_tokens.append((slot.code, f"{slot.code}:{child_serial}"))
 
+    # ---- 采购来源（方案甲）：白盒节点供应商入指纹 ----
+    # 红线：仅在显式标注供应商时才追加 "|S:code" token；未标注则与今天逐字节一致，
+    # 既有 SKU 指纹零变化。供应商 code 不可变、入指纹；name 可改、不入。
+    supplier_token = ""
+    if node_in.supplier_id is not None:
+        supplier = db.get(Supplier, node_in.supplier_id)
+        if supplier is None:
+            state.error(path, f"采购来源不存在（supplier_id={node_in.supplier_id}）")
+            ok = False
+        elif not supplier.is_active:
+            if lenient:
+                # 残货按已存来源算指纹：不阻断，照常写 token
+                state.supply(path, f"采购来源「{supplier.name}」已停用", "supplier_disabled")
+                supplier_token = f"|S:{supplier.code}"
+            else:
+                state.error(path, f"采购来源「{supplier.name}」已停用，不可用于新配置",
+                            family="supply")
+                ok = False
+        else:
+            supplier_token = f"|S:{supplier.code}"
+
     if not ok:
         return None
 
     attrs_str = ";".join(t for _, t in sorted(attr_tokens, key=lambda x: x[0]))
     children_str = ",".join(t for _, t in sorted(child_tokens, key=lambda x: x[0]))
-    return f"C:{node_type.code}{{{attrs_str}|{children_str}}}"
+    return f"C:{node_type.code}{{{attrs_str}|{children_str}{supplier_token}}}"
 
 
 def _current_prices(db: Session, sku_id: int) -> list[CurrentPrice]:
@@ -345,6 +367,7 @@ def _build_nodes(
         node_type_id=node_type_id,
         mode="configured",
         purchased_part_id=None,
+        supplier_id=node_in.supplier_id,  # 白盒节点采购来源（已入指纹）
     )
     db.add(node)
     for sel in node_in.attributes:

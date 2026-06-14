@@ -48,6 +48,7 @@ export interface NodeState {
   typeId: number
   attrs: Record<number, number | null>
   slots: Record<number, SlotState>
+  supplierId: number | null  // 采购来源(方案甲)：标注后入指纹，改它=不同 SKU
 }
 
 const typeCache = new Map<number, TypeMeta>()
@@ -77,7 +78,7 @@ export async function loadType(typeId: number): Promise<TypeMeta> {
 
 export async function newNodeState(typeId: number): Promise<NodeState> {
   const meta = await loadType(typeId)
-  const node: NodeState = { typeId, attrs: {}, slots: {} }
+  const node: NodeState = { typeId, attrs: {}, slots: {}, supplierId: null }
   for (const a of meta.attributes) node.attrs[a.id] = null
   for (const s of meta.slots) {
     node.slots[s.id] = { mode: 'empty', child: null, partId: null, partLabel: '' }
@@ -145,6 +146,7 @@ export function toPayload(rootTypeId: number, root: NodeState): any {
         child: st.mode === 'configured' && st.child ? nodeOut(st.child) : null,
         purchased_part_id: st.mode === 'purchased' ? st.partId : null,
       })),
+      supplier_id: n.supplierId,
     }
   }
   return { root_type_id: rootTypeId, root: nodeOut(root) }
@@ -153,6 +155,7 @@ export function toPayload(rootTypeId: number, root: NodeState): any {
 /** SKU 详情 config_tree → 本地状态（"以此为模板再配置"） */
 export async function fromSkuTree(tree: any): Promise<NodeState> {
   const node = await newNodeState(tree.node_type_id)
+  node.supplierId = tree.supplier_id ?? null  // 白盒节点采购来源（黑盒由成品件派生）
   for (const av of tree.attributes ?? []) node.attrs[av.attribute_id] = av.option_id
   for (const child of tree.children ?? []) {
     if (child.slot_id == null) continue

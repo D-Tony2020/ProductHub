@@ -25,6 +25,7 @@ const router = useRouter()
 // ---------- 起点选择 ----------
 const rootTypes = ref<any[]>([])
 const drafts = ref<any[]>([])
+const suppliers = ref<any[]>([])  // 采购来源下拉（方案甲）
 const rootType = ref<TypeMeta | null>(null)
 const rootState = ref<NodeState | null>(null)
 const draftId = ref<number | null>(null)
@@ -44,6 +45,7 @@ onMounted(async () => {
     // 凡可售根均可作配置起点：整机品类 + 单卖配件（如客户单卖筒体/阀门）
     rootTypes.value = data.filter((t: any) => t.is_sellable_root)
     drafts.value = (await api.get('/config-drafts')).data
+    suppliers.value = (await api.get('/suppliers')).data
     if (route.query.edit_sku_id) await startFromSku(Number(route.query.edit_sku_id), true)
     else if (route.query.sku_id) await startFromSku(Number(route.query.sku_id))
   } catch { /* 401 由拦截器跳转登录 */ }
@@ -539,6 +541,18 @@ const serverComplete = computed(() => result.value?.complete === true)
               </el-form-item>
             </el-form>
           </template>
+
+          <h4>采购来源
+            <span style="font-size: 12px; color: var(--el-text-color-secondary); font-weight: 400">
+              （非必选 · 标注后即区分为不同 SKU，改来源 = 新货）
+            </span>
+          </h4>
+          <el-select
+            v-model="currentNode.supplierId" clearable filterable placeholder="未标注来源"
+            style="width: 280px; margin-bottom: 8px"
+          >
+            <el-option v-for="s in suppliers" :key="s.id" :value="s.id" :label="s.name" />
+          </el-select>
 
           <template v-if="currentMeta.slots.length">
             <h4>部件</h4>
