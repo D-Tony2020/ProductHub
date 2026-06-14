@@ -52,6 +52,10 @@ class SkuOut(BaseModel):
     # 健康状态(M1)：ok / incomplete(红,缺必选或违反互斥) / supply_warn(黄,含停用件)。
     # 由端点实时推导填充，非 ORM 列。
     health_status: HealthStatus | None = None
+    # 治理血缘(M2-B)：非空=本 SKU 已被某次"修改"取代，指向新 SKU。保活时仍可报价。
+    superseded_by_sku_id: int | None = None
+    superseded_at: datetime | None = None
+    superseded_by_sku_code: str | None = None  # 展示用，端点填充
 
     model_config = {"from_attributes": True}
 
@@ -88,6 +92,19 @@ class SkuDetailOut(SkuOut):
 class SkuCreateResult(BaseModel):
     created: bool
     sku: SkuOut
+
+
+class SkuUpdateIn(BaseModel):
+    """修改既有 SKU 配置(M2-B)：不原地改(会变指纹)，而是生成新 SKU、旧 SKU 留痕指向。"""
+
+    config: ConfigPayload
+    retire_old: bool = False  # True=旧 SKU 停用(retired)；False=保活(仍可报价，只记血缘)
+
+
+class SkuUpdateResult(BaseModel):
+    created: bool      # True=新建了 SKU；False=新配置命中既有 SKU(旧 SKU 改指向它)
+    new_sku: SkuOut    # 修改后的目标 SKU
+    old_sku: SkuOut    # 被取代的原 SKU(已回填血缘，按 retire_old 决定停用/保活)
 
 
 class SkuListOut(BaseModel):

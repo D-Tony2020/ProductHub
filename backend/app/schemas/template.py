@@ -147,3 +147,40 @@ class NodeTypeDetailOut(NodeTypeOut):
     slots: list[SlotOut] = []
     # 反向归属：本节点被哪些上级当部件引用（多对多，直接上级）
     parents: list[ParentRefOut] = []
+
+
+# ---------- 档位二：双维反向归属 ----------
+
+class NodeTypeParentsOut(BaseModel):
+    """节点类型的双维上级归属（结构脉络带的"上级↑"维）。"""
+
+    direct: list[ParentRefOut] = []          # 部件级：直接把本类型当部件的上级
+    root_categories: list[ParentRefOut] = []  # 品类级：沿槽图向上 BFS 到的可售根品类
+
+
+# ---------- C dry-run：模板编辑影响面预演 ----------
+
+class ImpactPreviewIn(BaseModel):
+    entity_type: str = Field(pattern=r"^(node_type|attribute|slot|option)$")
+    entity_id: int
+    # 仅支持会收紧/停用从而可能伤及既有 SKU 的布尔字段
+    changes: dict[str, bool]
+
+
+class ImpactFamilyCount(BaseModel):
+    completeness: int = 0
+    structural: int = 0
+    supply: int = 0
+
+
+class ImpactSample(BaseModel):
+    sku_id: int
+    sku_code: str
+    status: str  # 变更后该 SKU 的健康状态（incomplete / supply_warn）
+
+
+class ImpactPreviewOut(BaseModel):
+    candidate_count: int          # 评估了多少在售 SKU（已按品类祖先收敛）
+    newly_broken: int             # 由 ok 变非 ok 的数量（核心预警数）
+    by_family: ImpactFamilyCount  # newly_broken 的首要问题分族计数
+    samples: list[ImpactSample] = []  # 最多 10 个样例

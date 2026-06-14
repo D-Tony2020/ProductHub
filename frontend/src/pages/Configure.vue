@@ -33,6 +33,10 @@ const draftId = ref<number | null>(null)
 const currentPath = ref<number[]>([])
 const { validating, result, trigger } = useValidator()
 
+// 修改既有 SKU 模式(M2-B)：保存走 update（生成新 SKU + 原 SKU 留痕停用/保活），非新建
+const editingSkuId = ref<number | null>(null)
+const editingSkuCode = ref('')
+
 onMounted(async () => {
   try {
     clearTypeCache()  // 进入配置看板先清缓存，确保模板最新（必选/部件槽变更立即生效）
@@ -40,8 +44,8 @@ onMounted(async () => {
     // 凡可售根均可作配置起点：整机品类 + 单卖配件（如客户单卖筒体/阀门）
     rootTypes.value = data.filter((t: any) => t.is_sellable_root)
     drafts.value = (await api.get('/config-drafts')).data
-    const skuId = route.query.sku_id
-    if (skuId) await startFromSku(Number(skuId))
+    if (route.query.edit_sku_id) await startFromSku(Number(route.query.edit_sku_id), true)
+    else if (route.query.sku_id) await startFromSku(Number(route.query.sku_id))
   } catch { /* 401 由拦截器跳转登录 */ }
 })
 
@@ -50,16 +54,24 @@ async function startNew(t: any) {
   rootState.value = await newNodeState(t.id)
   currentPath.value = []
   draftId.value = null
+  editingSkuId.value = null
 }
 
-async function startFromSku(skuId: number) {
+async function startFromSku(skuId: number, editing = false) {
   const { data } = await api.get(`/skus/${skuId}`)
   rootType.value = await loadType(data.root_type_id)
   await preloadTypes(data.config_tree)
   rootState.value = reactive(await fromSkuTree(data.config_tree))
   currentPath.value = []
   draftId.value = null
-  ElMessage.success(`已按 ${data.sku_code} 预填配置，修改任一项即成新配置`)
+  if (editing) {
+    editingSkuId.value = skuId
+    editingSkuCode.value = data.sku_code
+    ElMessage.info(`正在修改 ${data.sku_code}：改动后保存将生成一个新 SKU，原 SKU 可停用或保活`)
+  } else {
+    editingSkuId.value = null
+    ElMessage.success(`已按 ${data.sku_code} 预填配置，修改任一项即成新配置`)
+  }
 }
 
 async function preloadTypes(tree: any) {
@@ -73,6 +85,7 @@ async function startFromDraft(d: any) {
   rootState.value = reactive(d.payload as NodeState)
   draftId.value = d.id
   currentPath.value = []
+  editingSkuId.value = null
 }
 
 async function restoreDraftTypes(node: any) {
@@ -347,6 +360,44 @@ async function saveSku() {
   }
 }
 
+async function updateSku() {
+  if (!rootState.value || !rootType.value || !editingSkuId.value) return
+  // 询问原 SKU 去留：确认=停用，取消=保活，关闭=放弃整个保存
+  let retireOld = false
+  try {
+    await ElMessageBox.confirm(
+      `保存后将生成一个新 SKU（指纹改变，原 SKU 不会被原地修改）。`
+      + `原 SKU ${editingSkuCode.value} 如何处理？`,
+      '修改 SKU',
+      {
+        confirmButtonText: '停用原 SKU', cancelButtonText: '保活（仍可报价）',
+        distinguishCancelAndClose: true, type: 'warning',
+      },
+    )
+    retireOld = true
+  } catch (action) {
+    if (action === 'close') return
+    retireOld = false
+  }
+  saving.value = true
+  try {
+    const { data } = await api.post(`/skus/${editingSkuId.value}/update`, {
+      config: toPayload(rootType.value.id, rootState.value),
+      retire_old: retireOld,
+    })
+    const verb = data.created ? '已生成新 SKU' : '该配置已存在，已指向'
+    ElMessage.success(
+      `${verb} ${data.new_sku.sku_code}；原 ${editingSkuCode.value} 已${retireOld ? '停用' : '保活'}`,
+    )
+    if (auth.canSetPrice && data.created && !data.new_sku.current_prices?.length) {
+      await promptPrice(data.new_sku)
+    }
+    router.push({ path: '/skus', query: { sku_id: data.new_sku.id } })
+  } catch { /* 409 无修改 / 422 不完整 由拦截器提示 */ } finally {
+    saving.value = false
+  }
+}
+
 async function promptPrice(sku: any) {
   try {
     const { value } = await ElMessageBox.prompt(
@@ -589,6 +640,11 @@ const serverComplete = computed(() => result.value?.complete === true)
     <el-col :span="7" style="height: 100%">
       <el-card style="height: 100%; overflow: auto">
         <template #header>配置摘要</template>
+        <el-alert
+          v-if="editingSkuId" type="warning" :closable="false" show-icon style="margin-bottom: 10px"
+          :title="`修改模式：原 ${editingSkuCode}`"
+          description="保存将生成一个新 SKU，原 SKU 由你选择停用或保活；指纹绝不原地修改。"
+        />
         <el-progress :percentage="progressPct" :status="progressPct === 100 ? 'success' : undefined" />
 
         <template v-if="issues.length">
@@ -603,7 +659,22 @@ const serverComplete = computed(() => result.value?.complete === true)
 
         <template v-if="serverComplete">
           <el-divider />
-          <template v-if="matched">
+          <!-- 修改既有 SKU：统一走"保存修改"(update)；命中既有指纹由后端处理 -->
+          <template v-if="editingSkuId">
+            <el-alert
+              v-if="matched && matched.id === editingSkuId" type="info" :closable="false"
+              title="尚未做出改动" description="修改任一项后再保存"
+            />
+            <el-alert
+              v-else-if="matched" type="warning" :closable="false"
+              :title="`改后的配置与既有 ${matched.sku_code} 相同，保存将指向它`"
+            />
+            <el-button
+              type="primary" style="width: 100%; margin-top: 10px" :loading="saving"
+              :disabled="!!(matched && matched.id === editingSkuId)" @click="updateSku"
+            >保存修改</el-button>
+          </template>
+          <template v-else-if="matched">
             <el-alert type="success" :closable="false" title="该配置已存在">
               <p style="font-size: 15px"><b>{{ matched.sku_code }}</b>（{{ matched.status === 'active' ? '在售' : '已作废' }}）</p>
               <p>{{ matched.name }}</p>

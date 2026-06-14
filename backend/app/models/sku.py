@@ -4,6 +4,8 @@
 - sku.fingerprint 全量唯一（含 retired）——同配置绝不出现两个 SKU；
 - 复合 FK 在数据库层强制"节点类型匹配槽定义""黑盒件类型匹配槽""选项属于该属性"。
 """
+from datetime import datetime
+
 from sqlalchemy import (
     BigInteger,
     CheckConstraint,
@@ -37,14 +39,34 @@ class Sku(Base, PkMixin, TimestampMixin):
     import_batch_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("import_batch.id", ondelete="SET NULL")
     )
+    # 治理血缘（M2-B）：修改既有 SKU 不原地改（会变指纹），而是新建一个 SKU、
+    # 旧 SKU 在此指向新 SKU 留痕。指纹永不重算，与价格层 superseded 同范式。
+    # 被取代的旧 SKU 仍可保活在售（保活=仍可报价，只记血缘），故不强制 retired。
+    superseded_by_sku_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("sku.id", ondelete="SET NULL")
+    )
+    superseded_at: Mapped[datetime | None] = mapped_column()
 
     root_type = relationship("NodeType")
+    superseded_by = relationship(
+        "Sku", remote_side="Sku.id", foreign_keys="Sku.superseded_by_sku_id"
+    )
     nodes: Mapped[list["SkuConfigNode"]] = relationship(
         back_populates="sku", cascade="all, delete-orphan", passive_deletes=True
     )
 
     __table_args__ = (
         CheckConstraint("status IN ('active', 'retired')", name="status_enum"),
+        # 血缘两列同生同灭，避免半截状态
+        CheckConstraint(
+            "(superseded_by_sku_id IS NULL) = (superseded_at IS NULL)",
+            name="supersede_consistency",
+        ),
+        # 不可指向自身
+        CheckConstraint(
+            "superseded_by_sku_id IS NULL OR superseded_by_sku_id <> id",
+            name="supersede_not_self",
+        ),
     )
 
 

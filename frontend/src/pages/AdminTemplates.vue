@@ -2,7 +2,7 @@
 /** 产品模板管理（admin）：节点类型 / 属性与选项 / 部件槽。
  *  纪律由后端强制（code 不可变、软停用、引用计数、DAG、可选属性"无"选项禁令），
  *  此页只做呈现与触发。 */
-import { Right, Search, Top } from '@element-plus/icons-vue'
+import { Bottom, Right, Search, Top } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { computed, onMounted, reactive, ref } from 'vue'
 
@@ -11,6 +11,9 @@ import { api } from '../api/client'
 const types = ref<any[]>([])
 const selected = ref<any | null>(null)
 const optionRows = reactive<Record<number, any[]>>({})
+// 档位二：双维上级归属（部件级 direct + 品类级 root_categories）与面包屑导航轨迹
+const parentsDim = ref<{ direct: any[]; root_categories: any[] }>({ direct: [], root_categories: [] })
+const navTrail = ref<{ id: number; name: string }[]>([])
 
 // code 全部由后端按名称自动生成（拼音转写+查重），UI 不再要求填写
 const typeDialog = reactive({ visible: false, form: { name: '', kind: 'part', is_sellable_root: false } })
@@ -89,6 +92,11 @@ async function saveEdit() {
   }
   const payload = { ...editDialog.form }
   if (payload.unit === '') delete payload.unit
+  // C dry-run：把"非必选→必选"这种收紧改动落库前预演影响面
+  if (payload.is_required === true) {
+    const et = { type: 'node_type', attr: 'attribute', option: 'option', slot: 'slot' }[kind]
+    if (!(await confirmImpact(et, id, { is_required: true }))) return
+  }
   await api.patch(urls[kind], payload)
   editDialog.visible = false
   await loadTypes()
@@ -113,7 +121,56 @@ const grouped = computed<Record<string, any[]>>(() => {
 
 async function selectById(id: number) {
   const t = types.value.find((x) => x.id === id)
-  if (t) await select(t)
+  if (t) await select(t, true)  // 经脉络带/面包屑跳转 → 计入导航轨迹
+}
+
+// 当前节点的下级↓：其部件槽的子类型（去重），结构脉络带用
+const childTypes = computed<{ id: number; name: string }[]>(() => {
+  const seen = new Map<number, string>()
+  for (const s of selected.value?.slots ?? []) {
+    if (!seen.has(s.child_type_id)) seen.set(s.child_type_id, typeName(s.child_type_id))
+  }
+  return [...seen.entries()].map(([id, name]) => ({ id, name }))
+})
+
+async function gotoTrail(idx: number) {
+  const node = navTrail.value[idx]
+  navTrail.value = navTrail.value.slice(0, idx)  // select(viaNav) 会把自己补回末尾
+  const t = types.value.find((x) => x.id === node.id)
+  if (t) await select(t, true)
+}
+
+/** C dry-run：收紧/停用类改动落库前预演影响面，>0 时二次确认。返回是否继续。 */
+async function confirmImpact(
+  entityType: string, entityId: number, changes: Record<string, boolean>,
+): Promise<boolean> {
+  let res: any
+  try {
+    res = (await api.post('/template/preview-impact', {
+      entity_type: entityType, entity_id: entityId, changes,
+    })).data
+  } catch {
+    return true  // 预演本身失败不阻断正常操作
+  }
+  if (!res.newly_broken) return true
+  const f = res.by_family
+  const parts: string[] = []
+  if (f.completeness) parts.push(`缺必配 ${f.completeness}`)
+  if (f.structural) parts.push(`违反互斥 ${f.structural}`)
+  if (f.supply) parts.push(`含停用件 ${f.supply}`)
+  const samples = res.samples.slice(0, 5).map((s: any) => s.sku_code).join('、')
+  try {
+    await ElMessageBox.confirm(
+      `此改动将让 ${res.newly_broken} 个在售 SKU 变成残货（${parts.join('；')}）。`
+      + (samples ? `例如 ${samples}。` : '')
+      + '它们将无法加入报价单，需到 SKU 库「待治理」逐一处理。确认继续？',
+      '影响面预警',
+      { type: 'warning', confirmButtonText: '仍然继续', cancelButtonText: '取消' },
+    )
+    return true
+  } catch {
+    return false
+  }
 }
 
 // ---- 组内拖拽排序（搜索态禁用，避免丢失未显示项）；reorder 始终传全量顺序（组优先+组内序）----
@@ -146,11 +203,19 @@ async function loadTypes() {
   })).data
 }
 
-async function select(t: any) {
+async function select(t: any, viaNav = false) {
   const { data } = await api.get(`/template/node-types/${t.id}`)
   selected.value = data
+  parentsDim.value = (await api.get(`/template/node-types/${t.id}/parents`)).data
   for (const a of data.attributes) {
     optionRows[a.id] = (await api.get(`/template/attributes/${a.id}/options`)).data
+  }
+  if (viaNav) {
+    if (navTrail.value[navTrail.value.length - 1]?.id !== t.id) {
+      navTrail.value.push({ id: t.id, name: data.name })
+    }
+  } else {
+    navTrail.value = [{ id: t.id, name: data.name }]  // 从左栏直选 = 新起点
   }
 }
 
@@ -177,9 +242,11 @@ async function toggleTypeActive(t: any) {
       return
     }
   }
+  // C dry-run：停用类型对既有在售 SKU 的影响面预演（与上面"新配置"预警互补）
+  if (t.is_active && !(await confirmImpact('node_type', t.id, { is_active: false }))) return
   await api.patch(`/template/node-types/${t.id}`, { is_active: !t.is_active })
   await loadTypes()
-  if (selected.value?.id === t.id) await select(t)
+  if (selected.value?.id === t.id) await select(t, true)
 }
 
 async function createAttr() {
@@ -201,8 +268,10 @@ async function createOption() {
 }
 
 async function toggleOption(o: any) {
+  // 停用方向：落库前预演影响面（启用方向不会让既有 SKU 变残，免预演）
+  if (o.is_active && !(await confirmImpact('option', o.id, { is_active: false }))) return
   await api.patch(`/template/options/${o.id}`, { is_active: !o.is_active })
-  await select(selected.value)
+  await select(selected.value, true)
   ElMessage.success(o.is_active ? '已停用：新配置不可选，既有 SKU 不受影响' : '已启用')
 }
 
@@ -241,8 +310,9 @@ async function createSlot() {
 }
 
 async function toggleSlot(s: any) {
+  if (s.is_active && !(await confirmImpact('slot', s.id, { is_active: false }))) return
   await api.patch(`/template/slots/${s.id}`, { is_active: !s.is_active })
-  await select(selected.value)
+  await select(selected.value, true)
 }
 
 function typeName(id: number) {
@@ -309,23 +379,51 @@ function typeName(id: number) {
           </div>
         </template>
 
-        <!-- 反向归属：被哪些上级当部件引用（多对多，可点击跳进上级）-->
-        <el-card v-if="selected.kind === 'part' && selected.parents?.length" shadow="never"
-                 class="parents-card" body-style="padding: 10px 12px">
-          <div style="font-size: 13px; color: var(--el-color-warning); margin-bottom: 6px">
-            <el-icon style="vertical-align: -2px"><Top /></el-icon>
-            被用于 {{ selected.parents.length }} 个上级总成 — 停用或改名将波及它们
+        <!-- 档位二·结构脉络带：上级↑（品类级+部件级双维）/ 本体 / 下级↓，可点击穿行 -->
+        <el-card shadow="never" class="spine-card" body-style="padding: 10px 12px">
+          <el-breadcrumb v-if="navTrail.length > 1" separator="›" class="spine-crumb">
+            <el-breadcrumb-item v-for="(n, i) in navTrail" :key="i">
+              <a class="crumb-link" @click="gotoTrail(i)">{{ n.name }}</a>
+            </el-breadcrumb-item>
+          </el-breadcrumb>
+
+          <div class="spine-row">
+            <span class="spine-label"><el-icon><Top /></el-icon> 上级</span>
+            <template v-if="parentsDim.root_categories.length || parentsDim.direct.length">
+              <el-tag
+                v-for="p in parentsDim.root_categories" :key="'c' + p.id" class="chip"
+                type="primary" effect="dark" @click="selectById(p.id)"
+              >{{ p.name }}<small class="chip-kind">品类</small></el-tag>
+              <el-tag
+                v-for="p in parentsDim.direct" :key="'d' + p.id" class="chip"
+                :type="p.is_active ? 'warning' : 'info'" effect="plain" @click="selectById(p.id)"
+              >{{ p.name }}</el-tag>
+            </template>
+            <span v-else class="spine-none">顶层 / 暂未被任何上级引用</span>
           </div>
-          <el-tag
-            v-for="p in selected.parents" :key="p.id" class="parent-chip"
-            :type="p.is_active ? 'primary' : 'info'" effect="plain"
-            @click="selectById(p.id)"
-          >
-            {{ p.name }}<el-icon style="vertical-align: -2px; margin-left: 2px"><Right /></el-icon>
-          </el-tag>
-          <div style="font-size: 11px; color: var(--el-text-color-secondary); margin-top: 6px">
-            只读 · 解除引用请到对应上级停用该部件槽
+
+          <div class="spine-row spine-self">
+            <span class="spine-label">本体</span>
+            <b>{{ selected.name }}</b>
+            <el-tag size="small" effect="plain">{{ selected.kind === 'product' ? '整机' : '部件' }}</el-tag>
+            <el-tag v-if="!selected.is_active" size="small" type="info">已停用</el-tag>
           </div>
+
+          <div class="spine-row">
+            <span class="spine-label"><el-icon><Bottom /></el-icon> 下级</span>
+            <template v-if="childTypes.length">
+              <el-tag
+                v-for="c in childTypes" :key="c.id" class="chip"
+                type="success" effect="plain" @click="selectById(c.id)"
+              >{{ c.name }}<el-icon class="chip-arrow"><Right /></el-icon></el-tag>
+            </template>
+            <span v-else class="spine-none">无下级部件（叶子类型）</span>
+          </div>
+
+          <div
+            v-if="selected.kind === 'part' && parentsDim.direct.length"
+            class="spine-foot"
+          >只读 · 双维归属：品类级为沿槽图上溯的可售根，部件级为直接上级 · 停用/改名将波及上级；解除引用请到对应上级停用该部件槽</div>
         </el-card>
 
         <h4>规格属性
@@ -573,6 +671,18 @@ function typeName(id: number) {
   margin: 10px 0 2px;
 }
 .side-group .gcnt { color: var(--el-text-color-placeholder); }
-.parents-card { background: var(--el-color-warning-light-9); margin-bottom: 14px; }
-.parent-chip { cursor: pointer; margin: 0 6px 4px 0; }
+.spine-card { background: var(--el-fill-color-lighter); margin-bottom: 14px; }
+.spine-crumb { margin-bottom: 8px; font-size: 12px; }
+.crumb-link { cursor: pointer; color: var(--el-color-primary); }
+.spine-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 3px 0; }
+.spine-self { padding: 5px 0; }
+.spine-label {
+  display: inline-flex; align-items: center; gap: 2px; width: 52px; flex-shrink: 0;
+  font-size: 12px; color: var(--el-text-color-secondary);
+}
+.spine-none { font-size: 12px; color: var(--el-text-color-placeholder); }
+.chip { cursor: pointer; }
+.chip-kind { margin-left: 4px; opacity: 0.8; }
+.chip-arrow { vertical-align: -2px; margin-left: 2px; }
+.spine-foot { font-size: 11px; color: var(--el-text-color-secondary); margin-top: 8px; line-height: 1.5; }
 </style>

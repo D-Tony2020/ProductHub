@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /** SKU 库（货架，默认首页）：统计带 + 品类树 + 卡片/表格双视图 + 详情抽屉。
  *  P1：统计与计数走聚合端点，检索复用 /skus，零数据层改动。 */
-import { CopyDocument, Goods, Grid, List, WarningFilled } from '@element-plus/icons-vue'
+import { CopyDocument, EditPen, Goods, Grid, List, WarningFilled } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -17,9 +17,11 @@ const route = useRoute()
 
 const filters = reactive({
   q: '', root_type_id: null as number | null, status: null as string | null,
-  option_id: [] as number[], purchased_part_id: null as number | null, mine: false,
+  option_id: [] as number[], purchased_part_id: null as number | null,
+  supplier_id: null as number | null, mine: false,
 })
 const stats = ref({ active: 0, pending_price: 0, new_this_week: 0, stale_30d: 0, incomplete: 0 })
+const suppliers = ref<any[]>([])
 const tree = ref<{ products: any[]; parts: any[] }>({ products: [], parts: [] })
 const filterAttrs = ref<any[]>([])
 const rows = ref<any[]>([])
@@ -70,6 +72,10 @@ async function loadTree() {
   }
 }
 
+async function loadSuppliers() {
+  try { suppliers.value = (await api.get('/suppliers')).data } catch { /* 忽略 */ }
+}
+
 async function load() {
   loading.value = true
   try {
@@ -80,6 +86,7 @@ async function load() {
         status: filters.status ?? undefined,
         option_id: filters.option_id.length ? filters.option_id : undefined,
         purchased_part_id: filters.purchased_part_id ?? undefined,
+        supplier_id: filters.supplier_id ?? undefined,
         mine: filters.mine || undefined,
         page: page.value, page_size: 20,
       },
@@ -94,7 +101,7 @@ async function load() {
 
 onMounted(async () => {
   try {
-    await Promise.all([loadStats(), loadTree(), load()])
+    await Promise.all([loadStats(), loadTree(), loadSuppliers(), load()])
     if (route.query.sku_id) await openDetailById(Number(route.query.sku_id))
   } catch { /* 401 由拦截器跳转登录 */ }
 })
@@ -109,7 +116,8 @@ watch(() => filters.root_type_id, async (id) => {
   page.value = 1
   await load()
 })
-watch([() => filters.q, () => filters.status, () => filters.option_id, () => filters.mine], () => {
+watch([() => filters.q, () => filters.status, () => filters.option_id, () => filters.mine,
+       () => filters.supplier_id], () => {
   page.value = 1
   void load()
 }, { deep: true })
@@ -120,6 +128,7 @@ function selectQuick(kind: 'all' | 'pending' | 'mine' | 'incomplete') {
   filters.q = ''
   filters.option_id = []
   filters.root_type_id = null
+  filters.supplier_id = null
   filterAttrs.value = []
   filters.status = kind === 'pending' ? 'pending_price' : kind === 'incomplete' ? 'incomplete' : null
   filters.mine = kind === 'mine'
@@ -307,6 +316,12 @@ function renderTreeText(node: any, depth = 0): string[] {
               :value="o.id" :label="`${a.name}: ${o.label}`"
             />
           </el-select>
+          <el-select
+            v-model="filters.supplier_id" clearable filterable placeholder="按供应商"
+            style="width: 160px"
+          >
+            <el-option v-for="s in suppliers" :key="s.id" :value="s.id" :label="s.name" />
+          </el-select>
           <el-input v-model="filters.q" placeholder="SKU 编码 / 名称" clearable style="width: 200px" />
           <span style="flex: 1"></span>
           <el-radio-group v-model="viewMode" size="small">
@@ -342,6 +357,13 @@ function renderTreeText(node: any, depth = 0): string[] {
                 </el-tooltip>
                 <el-button v-if="auth.canSetPrice" size="small" @click="openPriceDialog(row)">改价</el-button>
                 <span style="flex: 1"></span>
+                <el-tooltip
+                  v-if="row.status === 'active' && !row.superseded_by_sku_id"
+                  content="修改此 SKU 配置（生成新 SKU，原 SKU 停用或保活）" placement="top"
+                >
+                  <el-button size="small" text :icon="EditPen" aria-label="修改配置"
+                             @click="router.push({ path: '/configure', query: { edit_sku_id: row.id } })" />
+                </el-tooltip>
                 <el-tooltip content="以此为模板复制配置一个新 SKU" placement="top">
                   <el-button size="small" text :icon="CopyDocument" aria-label="以此再配置"
                              @click="router.push({ path: '/configure', query: { sku_id: row.id } })" />
@@ -380,6 +402,13 @@ function renderTreeText(node: any, depth = 0): string[] {
                 </span>
               </el-tooltip>
               <el-button v-if="auth.canSetPrice" size="small" @click.stop="openPriceDialog(row)">改价</el-button>
+              <el-tooltip
+                v-if="row.status === 'active' && !row.superseded_by_sku_id"
+                content="修改此 SKU 配置（生成新 SKU，原 SKU 停用或保活）" placement="top"
+              >
+                <el-button size="small" text :icon="EditPen" aria-label="修改配置"
+                           @click.stop="router.push({ path: '/configure', query: { edit_sku_id: row.id } })" />
+              </el-tooltip>
               <el-tooltip content="以此为模板复制配置一个新 SKU" placement="top">
                 <el-button size="small" text :icon="CopyDocument" aria-label="以此再配置"
                            @click.stop="router.push({ path: '/configure', query: { sku_id: row.id } })" />
@@ -407,6 +436,9 @@ function renderTreeText(node: any, depth = 0): string[] {
           {{ priceText(drawer.sku) }}
         </span>
         <el-tag v-else type="warning" style="margin-left: 12px">待录价</el-tag>
+        <el-tag v-if="drawer.sku.superseded_by_sku_code" type="info" effect="plain" style="margin-left: 8px">
+          已被 {{ drawer.sku.superseded_by_sku_code }} 取代
+        </el-tag>
       </p>
       <el-alert
         v-if="drawer.sku.health && drawer.sku.health.status !== 'ok'"
@@ -463,6 +495,11 @@ function renderTreeText(node: any, depth = 0): string[] {
                        @click="addToQuote(drawer.sku)">加入报价单</el-button>
           </span>
         </el-tooltip>
+        <el-button
+          v-if="drawer.sku.status === 'active' && !drawer.sku.superseded_by_sku_id"
+          type="primary" plain :icon="EditPen"
+          @click="router.push({ path: '/configure', query: { edit_sku_id: drawer.sku.id } })"
+        >修改配置</el-button>
         <el-button @click="router.push({ path: '/configure', query: { sku_id: drawer.sku.id } })">
           以此为模板再配置
         </el-button>

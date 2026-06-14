@@ -16,6 +16,7 @@ from app.models import (
     AppUser,
     AttributeDef,
     NodeType,
+    PurchasedPart,
     Sku,
     SkuAttributeValue,
     SkuConfigNode,
@@ -32,6 +33,8 @@ from app.schemas.sku import (
     SkuNodeOut,
     SkuOut,
     SkuStatsOut,
+    SkuUpdateIn,
+    SkuUpdateResult,
 )
 from app.services.config_engine import _current_prices, create_sku
 from app.services.health_engine import compute_health, load_sku_for_health
@@ -45,6 +48,8 @@ def _sku_out(db: Session, sku: Sku, health_status: str | None = None) -> SkuOut:
     out.root_type_name = sku.root_type.name if sku.root_type else ""
     out.current_prices = _current_prices(db, sku.id)
     out.health_status = health_status  # 由调用方实时推导填入（列表/详情）
+    if sku.superseded_by_sku_id and sku.superseded_by:
+        out.superseded_by_sku_code = sku.superseded_by.sku_code  # 血缘展示
     return out
 
 
@@ -105,6 +110,7 @@ def search(
     status: str | None = Query(default=None, pattern=r"^(active|retired|pending_price|incomplete)$"),
     option_id: list[int] = Query(default=[]),
     purchased_part_id: int | None = None,
+    supplier_id: int | None = None,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
     mine: bool = False,
@@ -145,6 +151,17 @@ def search(
                 select(SkuConfigNode.sku_id).where(
                     SkuConfigNode.purchased_part_id == purchased_part_id
                 )
+            )
+        )
+    if supplier_id is not None:
+        # 按供应商分类（"出现即计入"）：SKU 配置树中任一黑盒件来自该供应商即命中。
+        # 经 SkuConfigNode.purchased_part_id → PurchasedPart.supplier_id 两级关联；
+        # 纯自产(无外购件)的 SKU 天然不落入任何供应商，符合设计。
+        stmt = stmt.where(
+            Sku.id.in_(
+                select(SkuConfigNode.sku_id)
+                .join(PurchasedPart, PurchasedPart.id == SkuConfigNode.purchased_part_id)
+                .where(PurchasedPart.supplier_id == supplier_id)
             )
         )
     # 健康检测要遍历配置树，预取避免 N+1；type_cache 跨 SKU 复用类型查询
@@ -297,3 +314,41 @@ def restore(
                 entity_id=sku.id, before={"status": "retired"}, after={"status": "active"})
     db.commit()
     return _sku_out(db, sku)
+
+
+@router.post("/{sku_id}/update", response_model=SkuUpdateResult, status_code=201)
+def update_config(
+    sku_id: int,
+    body: SkuUpdateIn,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
+):
+    """修改既有 SKU 配置（M2-B 治理闭环）：绝不原地改（会变指纹），而是生成一个新 SKU、
+    旧 SKU 留痕指向新 SKU，并按 retire_old 决定旧 SKU 停用还是保活（保活=仍可报价，只记血缘）。
+    新配置不完整 → 422（沿用 create 同闸）；与原 SKU 完全相同 → 409（无修改）。"""
+    old = get_or_404(db, Sku, sku_id)
+    if old.status != "active" or old.superseded_at is not None:
+        raise HTTPException(409, f"SKU {old.sku_code} 已作废或已被取代，不可再修改")
+    new_sku, created = create_sku(db, body.config, created_by=user.id)
+    if new_sku.id == old.id:
+        # 指纹不变=没有实质修改，不产生血缘（杜绝自指与噪声）
+        raise HTTPException(409, "新配置与原 SKU 完全相同，未发生任何修改")
+    if not created and new_sku.status == "retired":
+        # 改成了某个已作废配置 → 用户主动重新采纳，复活之（避免指向死链）
+        new_sku.status = "active"
+    old.superseded_by_sku_id = new_sku.id
+    old.superseded_at = datetime.now()
+    if body.retire_old:
+        old.status = "retired"
+    write_audit(
+        db, actor_id=user.id, action="supersede", entity_type="sku", entity_id=old.id,
+        before={"sku_code": old.sku_code, "status": "active"},
+        after={"superseded_by": new_sku.sku_code, "new_sku_id": new_sku.id,
+               "old_status": old.status, "created_new": created},
+    )
+    db.commit()
+    return SkuUpdateResult(
+        created=created,
+        new_sku=_sku_out(db, new_sku, compute_health(db, new_sku).status),
+        old_sku=_sku_out(db, old),
+    )
