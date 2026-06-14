@@ -56,7 +56,9 @@ def list_suppliers(
 def create_supplier(
     body: SupplierIn, db: Session = Depends(get_db), admin: AppUser = Depends(require_admin)
 ):
-    supplier = Supplier(**body.model_dump())
+    data = body.model_dump()
+    data["code"] = data["code"] or next_code(db, "SUP")  # 缺省自动生成 SUP 流水
+    supplier = Supplier(**data)
     db.add(supplier)
     try:
         db.flush()
@@ -93,6 +95,7 @@ def update_supplier(
 @router.get("/purchased-parts", response_model=list[PurchasedPartOut])
 def list_parts(
     node_type_id: int | None = None,
+    supplier_id: int | None = None,
     q: str | None = Query(default=None, max_length=100),
     status: str | None = Query(default=None, pattern=r"^(draft|active|merged|retired)$"),
     usable_only: bool = False,
@@ -101,6 +104,8 @@ def list_parts(
     stmt = select(PurchasedPart).order_by(PurchasedPart.id.desc()).limit(200)
     if node_type_id is not None:
         stmt = stmt.where(PurchasedPart.node_type_id == node_type_id)
+    if supplier_id is not None:
+        stmt = stmt.where(PurchasedPart.supplier_id == supplier_id)
     if status is not None:
         stmt = stmt.where(PurchasedPart.status == status)
     if usable_only:

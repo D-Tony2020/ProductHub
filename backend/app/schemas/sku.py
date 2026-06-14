@@ -124,6 +124,22 @@ class SkuStatsOut(BaseModel):
     incomplete: int = 0  # 在售但因模板演化变残缺/含停用件（待治理工作堆，红+黄合计）
 
 
+class SkuOverviewOut(BaseModel):
+    """产品全貌：按可售品类聚合（比 SKU 粗一档），产品库首页"全貌"视图用。"""
+
+    root_type_id: int
+    root_type_name: str
+    kind: str                      # product 整机 / part 配件
+    sku_count: int                 # 该品类在售 SKU 数
+    incomplete: int                # 待治理（残货）
+    pending_price: int             # 待录价
+    price_min: Decimal | None = None
+    price_max: Decimal | None = None
+    currency: str | None = None
+    slot_count: int                # 选配维度：部件槽数
+    attr_count: int                # 选配维度：属性轴数
+
+
 class PriceIn(BaseModel):
     # 上限对齐 Numeric(14,4) 容量，超限在入参层拦截而非数据库 500
     price: Decimal = Field(ge=0, le=Decimal("9999999999.9999"))

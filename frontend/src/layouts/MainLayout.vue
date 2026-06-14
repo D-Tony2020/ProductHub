@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import {
-  Box, DataAnalysis, Document, Setting, ShoppingCart, Upload, User,
+  Box, Document, Goods, Setting, ShoppingCart,
 } from '@element-plus/icons-vue'
 import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -45,7 +45,7 @@ async function fetchSuggestions(q: string, cb: (items: Suggestion[]) => void) {
 function onSelectSuggestion(item: Suggestion) {
   searchText.value = ''
   if (item.kind === 'SKU') router.push({ path: '/skus', query: { sku_id: item.id } })
-  else router.push({ path: '/parts', query: { part_id: item.id } })
+  else router.push('/suppliers')
 }
 
 function logout() {
@@ -59,16 +59,16 @@ function logout() {
     <el-aside width="210px" style="border-right: 1px solid var(--el-border-color)">
       <div class="brand">ProductHub<br /><small>北京合胜 · 产品中台</small></div>
       <el-menu :default-active="route.path" router>
-        <el-menu-item index="/skus"><el-icon><DataAnalysis /></el-icon>SKU 查价</el-menu-item>
+        <el-menu-item index="/skus"><el-icon><Goods /></el-icon>产品库</el-menu-item>
         <el-menu-item index="/configure"><el-icon><Box /></el-icon>配置看板</el-menu-item>
         <el-menu-item index="/quotations"><el-icon><Document /></el-icon>报价单</el-menu-item>
-        <el-menu-item index="/parts"><el-icon><ShoppingCart /></el-icon>成品采购件</el-menu-item>
-        <template v-if="auth.isAdmin">
-          <el-divider style="margin: 8px 0" />
-          <el-menu-item index="/admin/templates"><el-icon><Setting /></el-icon>产品模板</el-menu-item>
-          <el-menu-item index="/admin/import"><el-icon><Upload /></el-icon>数据导入</el-menu-item>
-          <el-menu-item index="/admin/users"><el-icon><User /></el-icon>用户管理</el-menu-item>
-        </template>
+        <el-menu-item index="/suppliers"><el-icon><ShoppingCart /></el-icon>供应商与采购件</el-menu-item>
+        <el-sub-menu v-if="auth.isAdmin" index="/admin">
+          <template #title><el-icon><Setting /></el-icon>系统设置</template>
+          <el-menu-item index="/admin/templates">产品模板</el-menu-item>
+          <el-menu-item index="/admin/import">数据导入</el-menu-item>
+          <el-menu-item index="/admin/users">用户管理</el-menu-item>
+        </el-sub-menu>
       </el-menu>
     </el-aside>
     <el-container>

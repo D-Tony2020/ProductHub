@@ -74,3 +74,19 @@ def test_stats_route_not_shadowed(client, template):
     assert set(r.json().keys()) == {
         "active", "pending_price", "new_this_week", "stale_30d", "incomplete",
     }
+
+
+def test_overview(client, template):
+    """产品全貌：按可售品类聚合（产品库首页"全貌"视图数据源）。"""
+    admin = login(client, "admin", "admin@Test2026")
+    a = client.post("/api/v1/skus", json={"config": make_payload(template, charge="KG4").model_dump()},
+                    headers=admin).json()["sku"]
+    client.post(f"/api/v1/skus/{a['id']}/prices", json={"price": "12.5"}, headers=admin)
+    ov = client.get("/api/v1/skus/overview", headers=admin).json()
+    ext = next(o for o in ov if o["root_type_id"] == template["ext"].id)
+    assert ext["kind"] == "product"
+    assert ext["sku_count"] == 1
+    assert float(ext["price_min"]) == 12.5 and float(ext["price_max"]) == 12.5
+    assert ext["slot_count"] == 2   # 筒体槽 + 阀门槽
+    assert ext["attr_count"] == 2   # 充装量 + 工作压力
+    assert ext["currency"] == "USD"

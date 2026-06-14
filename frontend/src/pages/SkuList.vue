@@ -101,7 +101,7 @@ async function load() {
 
 onMounted(async () => {
   try {
-    await Promise.all([loadStats(), loadTree(), loadSuppliers(), load()])
+    await Promise.all([loadStats(), loadTree(), loadSuppliers(), loadOverview(), load()])
     if (route.query.sku_id) await openDetailById(Number(route.query.sku_id))
   } catch { /* 401 由拦截器跳转登录 */ }
 })
@@ -252,9 +252,52 @@ function sourcingRows(tree: any): { label: string; supplier: string | null; blac
   walk(tree, true)
   return rows
 }
+
+// ---- 产品库首页视图：货架(默认·业务员日常主场) / 产品全貌(可切视角·偏好持久化) ----
+const homeView = ref<'shelf' | 'overview'>(
+  (localStorage.getItem('home_view') as 'shelf' | 'overview') || 'shelf',
+)
+watch(homeView, (v) => localStorage.setItem('home_view', v))
+const overview = ref<any[]>([])
+async function loadOverview() {
+  try { overview.value = (await api.get('/skus/overview')).data } catch { /* 401 由拦截器处理 */ }
+}
+const ovProducts = computed(() => overview.value.filter((t) => t.kind === 'product'))
+const ovParts = computed(() => overview.value.filter((t) => t.kind === 'part'))
+const ovStats = computed(() => ({
+  types: overview.value.filter((t) => t.sku_count > 0).length,
+  skus: overview.value.reduce((a, t) => a + t.sku_count, 0),
+  pending: overview.value.reduce((a, t) => a + t.pending_price, 0),
+  incomplete: overview.value.reduce((a, t) => a + t.incomplete, 0),
+}))
+function openCategory(rt: any) {
+  filters.mine = false
+  filters.status = null
+  filters.root_type_id = rt.root_type_id
+  homeView.value = 'shelf'
+}
+function priceRange(t: any): string | null {
+  if (t.price_min == null) return null
+  const c = t.currency || ''
+  return t.price_min === t.price_max ? `${c} ${t.price_min}` : `${c} ${t.price_min}~${t.price_max}`
+}
 </script>
 
 <template>
+  <!-- 产品库视图切换：货架(默认·日常主场) / 产品全貌(可切视角) -->
+  <div class="home-toggle">
+    <el-radio-group v-model="homeView">
+      <el-radio-button value="shelf"><el-icon><List /></el-icon> SKU 货架</el-radio-button>
+      <el-radio-button value="overview"><el-icon><Grid /></el-icon> 产品全貌</el-radio-button>
+    </el-radio-group>
+    <span class="toggle-hint">{{ homeView === 'shelf'
+      ? '业务员日常：找货 / 查价 / 加报价单'
+      : '公司有哪些产品（按品类聚合，比 SKU 粗一档）' }}</span>
+    <span style="flex: 1"></span>
+    <el-button type="primary" @click="router.push('/configure')">+ 新配置</el-button>
+  </div>
+
+  <template v-if="homeView === 'shelf'">
   <!-- 统计带 -->
   <div class="stat-band">
     <div class="stat-card">
@@ -440,6 +483,46 @@ function sourcingRows(tree: any): { label: string; supplier: string | null; blac
       </el-card>
     </el-col>
   </el-row>
+  </template>
+
+  <!-- 产品全貌：按品类聚合的卡片墙（比 SKU 粗一档）-->
+  <template v-else>
+    <div class="stat-band ov-band">
+      <div class="stat-card"><div class="stat-label">产品类型(有货)</div><div class="stat-value">{{ ovStats.types }}</div></div>
+      <div class="stat-card"><div class="stat-label">SKU 总数</div><div class="stat-value">{{ ovStats.skus }}</div></div>
+      <div class="stat-card" :class="{ warn: ovStats.pending > 0 }"><div class="stat-label">待录价</div><div class="stat-value">{{ ovStats.pending }}</div></div>
+      <div class="stat-card" :class="{ danger: ovStats.incomplete > 0 }"><div class="stat-label">待治理</div><div class="stat-value">{{ ovStats.incomplete }}</div></div>
+    </div>
+
+    <template v-for="grp in [
+      { label: '整机', items: ovProducts },
+      { label: '配件单卖', items: ovParts },
+    ]" :key="grp.label">
+      <div v-if="grp.items.length" class="ov-group">{{ grp.label }}</div>
+      <div v-if="grp.items.length" class="ov-grid">
+        <el-card v-for="t in grp.items" :key="t.root_type_id" shadow="hover"
+                 class="ov-card" :class="{ empty: t.sku_count === 0 }"
+                 body-style="padding: 14px 16px" @click="openCategory(t)">
+          <div class="ov-name">{{ t.root_type_name }}</div>
+          <div class="ov-count"><b>{{ t.sku_count }}</b><span>个 SKU</span></div>
+          <div class="ov-badges">
+            <el-tag v-if="t.incomplete" type="danger" size="small" effect="dark">待治理 {{ t.incomplete }}</el-tag>
+            <el-tag v-if="t.pending_price" type="warning" size="small">待录价 {{ t.pending_price }}</el-tag>
+            <span v-if="!t.incomplete && !t.pending_price && t.sku_count" class="ov-ok">健康</span>
+          </div>
+          <div class="ov-meta">
+            <span v-if="priceRange(t)" class="ov-price">{{ priceRange(t) }}</span>
+            <span v-else class="ov-noprice">{{ t.sku_count ? '待录价' : '暂无 SKU' }}</span>
+          </div>
+          <div class="ov-dims">选配维度 · {{ t.slot_count }} 部件槽 · {{ t.attr_count }} 属性轴</div>
+        </el-card>
+      </div>
+    </template>
+    <p class="ov-foot">
+      点任一品类卡 → 下钻到该品类的 SKU 货架。产品全貌只读，看"公司有哪些产品"；
+      改产品类型结构请到「系统设置 · 产品模板」。
+    </p>
+  </template>
 
   <el-drawer v-model="drawer.visible" size="50%" :title="drawer.sku?.sku_code">
     <template v-if="drawer.sku">
@@ -665,4 +748,25 @@ function sourcingRows(tree: any): { label: string; supplier: string | null; blac
 .src-label { font-size: 13px; }
 .src-sup { font-size: 13px; color: var(--el-color-primary); }
 .src-none { font-size: 13px; color: var(--el-color-danger); }
+
+/* 产品库视图切换 + 产品全貌 */
+.home-toggle { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.toggle-hint { font-size: 12px; color: var(--el-text-color-secondary); }
+.stat-card.danger { background: var(--el-color-danger-light-9); }
+.ov-group { font-weight: 500; font-size: 14px; margin: 14px 0 8px; color: var(--el-text-color-primary); }
+.ov-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+.ov-card { cursor: pointer; transition: border-color .15s; }
+.ov-card.empty { opacity: 0.6; }
+.ov-name { font-size: 15px; font-weight: 500; }
+.ov-count { margin: 6px 0 8px; }
+.ov-count b { font-size: 26px; font-weight: 600; }
+.ov-count span { font-size: 12px; color: var(--el-text-color-secondary); margin-left: 4px; }
+.ov-badges { display: flex; gap: 6px; align-items: center; min-height: 22px; flex-wrap: wrap; }
+.ov-ok { font-size: 12px; color: var(--el-color-success); }
+.ov-meta { margin-top: 8px; }
+.ov-price { font-size: 15px; color: var(--el-color-success); font-weight: 500; }
+.ov-noprice { font-size: 12px; color: var(--el-text-color-placeholder); }
+.ov-dims { font-size: 11px; color: var(--el-text-color-secondary); margin-top: 8px;
+  border-top: 0.5px solid var(--el-border-color-lighter); padding-top: 8px; }
+.ov-foot { font-size: 12px; color: var(--el-text-color-secondary); margin-top: 14px; }
 </style>

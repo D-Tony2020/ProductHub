@@ -32,6 +32,7 @@ from app.schemas.sku import (
     SkuListOut,
     SkuNodeOut,
     SkuOut,
+    SkuOverviewOut,
     SkuStatsOut,
     SkuUpdateIn,
     SkuUpdateResult,
@@ -230,6 +231,51 @@ def stats(db: Session = Depends(get_db), _: AppUser = Depends(get_current_user))
     incomplete = sum(1 for s in active_skus if compute_health(db, s, tc).status != "ok")
     return SkuStatsOut(active=active, pending_price=pending,
                        new_this_week=new_week, stale_30d=stale, incomplete=incomplete)
+
+
+@router.get("/overview", response_model=list[SkuOverviewOut])
+def overview(db: Session = Depends(get_db), _: AppUser = Depends(get_current_user)):
+    """产品全貌：按可售品类聚合（比 SKU 粗一档）。产品库首页"全貌"视图的数据源。"""
+    priced_ids = set(
+        db.execute(select(sql_text("sku_id")).select_from(sql_text("v_sku_current_price")))
+        .scalars().all()
+    )
+    roots = db.execute(
+        select(NodeType).where(NodeType.is_sellable_root.is_(True))
+        .options(selectinload(NodeType.slots), selectinload(NodeType.attributes))
+        .order_by(NodeType.display_order, NodeType.id)
+    ).scalars().all()
+    tc: dict = {}
+    out: list[SkuOverviewOut] = []
+    for rt in roots:
+        skus = db.execute(
+            select(Sku)
+            .options(selectinload(Sku.nodes).selectinload(SkuConfigNode.attribute_values))
+            .where(Sku.status == "active", Sku.root_type_id == rt.id)
+        ).scalars().all()
+        incomplete = pending = 0
+        prices: list = []
+        currency = None
+        for s in skus:
+            if compute_health(db, s, tc).status != "ok":
+                incomplete += 1
+            cps = _current_prices(db, s.id)
+            if cps:
+                for p in cps:
+                    prices.append(p.price)
+                    currency = p.currency
+            else:
+                pending += 1
+        out.append(SkuOverviewOut(
+            root_type_id=rt.id, root_type_name=rt.name, kind=rt.kind,
+            sku_count=len(skus), incomplete=incomplete, pending_price=pending,
+            price_min=min(prices) if prices else None,
+            price_max=max(prices) if prices else None,
+            currency=currency,
+            slot_count=len([x for x in rt.slots if x.is_active]),
+            attr_count=len([a for a in rt.attributes if a.is_active]),
+        ))
+    return out
 
 
 @router.get("/export")
