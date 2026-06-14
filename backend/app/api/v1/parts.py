@@ -119,6 +119,12 @@ def list_parts(
     return [_part_out(db, p) for p in db.execute(stmt).scalars().all()]
 
 
+@router.get("/purchased-parts/by-id/{part_id}", response_model=PurchasedPartOut)
+def get_part(part_id: int, db: Session = Depends(get_db), _: AppUser = Depends(get_current_user)):
+    """单件详情（含灰盒规格 spec_config / spec_note）。供部件规格编辑器调用。"""
+    return _part_out(db, get_or_404(db, PurchasedPart, part_id))
+
+
 @router.get("/purchased-parts/similar", response_model=list[PurchasedPartOut])
 def similar_parts(
     node_type_id: int,

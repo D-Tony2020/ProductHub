@@ -173,6 +173,34 @@ export async function fromSkuTree(tree: any): Promise<NodeState> {
   return node
 }
 
+/** ConfigPayload(toPayload 的产物) → 本地状态。供"部件规格"灰盒编辑器读回 spec_config。 */
+export async function fromPayload(payload: any): Promise<NodeState> {
+  async function build(typeId: number, nodeIn: any): Promise<NodeState> {
+    const node = await newNodeState(typeId)  // 加载该类型(进缓存)并初始化空状态
+    node.supplierId = nodeIn?.supplier_id ?? null
+    for (const av of nodeIn?.attributes ?? []) node.attrs[av.attribute_id] = av.option_id
+    const meta = getTypeMeta(typeId)
+    for (const sel of nodeIn?.slots ?? []) {
+      if (!sel || sel.mode === 'empty') continue
+      if (sel.mode === 'purchased') {
+        node.slots[sel.slot_id] = {
+          mode: 'purchased', child: null, partId: sel.purchased_part_id, partLabel: '（成品件）',
+        }
+      } else if (sel.mode === 'configured' && sel.child) {
+        const slotMeta = meta?.slots.find((s) => s.id === sel.slot_id)
+        if (slotMeta) {
+          node.slots[sel.slot_id] = {
+            mode: 'configured', child: await build(slotMeta.child_type_id, sel.child),
+            partId: null, partLabel: '',
+          }
+        }
+      }
+    }
+    return node
+  }
+  return build(payload.root_type_id, payload.root)
+}
+
 export function useValidator() {
   const validating = ref(false)
   const result = ref<any | null>(null)

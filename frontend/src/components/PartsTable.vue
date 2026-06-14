@@ -4,9 +4,12 @@
  *  - 传 supplierId  = 某供应商名下，隐藏供应商列，提供"在该供应商下新建采购件"。 */
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 
 import { api } from '../api/client'
 import { useAuthStore } from '../stores/auth'
+
+const router = useRouter()
 
 const props = defineProps<{ supplierId?: number | null }>()
 const emit = defineEmits<{ (e: 'changed'): void }>()
@@ -133,7 +136,15 @@ const statusMap: Record<string, { label: string; type: string }> = {
           </div>
         </template>
       </el-table-column>
-      <el-table-column v-if="auth.isAdmin" label="操作" width="200">
+      <el-table-column v-if="auth.isAdmin" label="状态/规格" width="110">
+        <template #default="{ row }">
+          <el-button
+            v-if="['draft', 'active'].includes(row.status)" size="small" text type="primary"
+            @click="router.push({ path: '/configure', query: { part_spec_id: row.id } })"
+          >{{ row.spec_config || row.spec_note ? '规格✓ 编辑' : '+ 规格' }}</el-button>
+        </template>
+      </el-table-column>
+      <el-table-column v-if="auth.isAdmin" label="操作" width="190">
         <template #default="{ row }">
           <el-button v-if="row.status === 'draft'" size="small" type="success" @click="approve(row)">转正</el-button>
           <el-button v-if="['draft', 'active'].includes(row.status)" size="small" @click="merge(row)">合并</el-button>

@@ -10,6 +10,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, CODE_SQL_CHECK, PkMixin, TimestampMixin
@@ -52,7 +53,10 @@ class PurchasedPart(Base, PkMixin, TimestampMixin):
         BigInteger, ForeignKey("supplier.id", ondelete="RESTRICT"), nullable=False
     )
     name: Mapped[str] = mapped_column(String(200), nullable=False)
-    spec_note: Mapped[str | None] = mapped_column(Text)
+    spec_note: Mapped[str | None] = mapped_column(Text)   # 纯文本自由规格（兜底）
+    # 灰盒结构化规格：可选配置树(全不必配)，复用 ConfigPayload 形态，仅描述性元数据。
+    # 🔴 永不入 SKU 指纹（件靠 code 选中，规格不参与身份）；JSONB 存、不结构化校验完整性。
+    spec_config: Mapped[dict | None] = mapped_column(JSONB)
     status: Mapped[str] = mapped_column(String(10), nullable=False, default="draft")
     merged_into_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("purchased_part.id", ondelete="RESTRICT")

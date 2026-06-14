@@ -10,7 +10,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { api } from '../api/client'
 import PartPicker from '../components/PartPicker.vue'
 import {
-  clearTypeCache, fromSkuTree, getTypeMeta, loadType, localProgress, newNodeState,
+  clearTypeCache, fromPayload, fromSkuTree, getTypeMeta, loadType, localProgress, newNodeState,
   toPayload, useValidator,
   type NodeState, type SlotMeta, type TypeMeta,
 } from '../composables/useConfigurator'
@@ -38,6 +38,11 @@ const { validating, result, trigger } = useValidator()
 const editingSkuId = ref<number | null>(null)
 const editingSkuCode = ref('')
 
+// 灰盒·部件规格模式：编辑某成品采购件的可选规格(全选填、仅描述、不进指纹)
+const partSpecId = ref<number | null>(null)
+const partSpecName = ref('')
+const specNote = ref('')
+
 onMounted(async () => {
   try {
     clearTypeCache()  // 进入配置看板先清缓存，确保模板最新（必选/部件槽变更立即生效）
@@ -46,10 +51,26 @@ onMounted(async () => {
     rootTypes.value = data.filter((t: any) => t.is_sellable_root)
     drafts.value = (await api.get('/config-drafts')).data
     suppliers.value = (await api.get('/suppliers')).data
-    if (route.query.edit_sku_id) await startFromSku(Number(route.query.edit_sku_id), true)
+    if (route.query.part_spec_id) await startForPartSpec(Number(route.query.part_spec_id))
+    else if (route.query.edit_sku_id) await startFromSku(Number(route.query.edit_sku_id), true)
     else if (route.query.sku_id) await startFromSku(Number(route.query.sku_id))
   } catch { /* 401 由拦截器跳转登录 */ }
 })
+
+async function startForPartSpec(partId: number) {
+  const { data } = await api.get(`/purchased-parts/by-id/${partId}`)
+  rootType.value = await loadType(data.node_type_id)
+  rootState.value = data.spec_config
+    ? reactive(await fromPayload(data.spec_config))
+    : await newNodeState(data.node_type_id)
+  specNote.value = data.spec_note ?? ''
+  currentPath.value = []
+  draftId.value = null
+  editingSkuId.value = null
+  partSpecId.value = partId
+  partSpecName.value = data.name
+  ElMessage.info(`正在编辑「${data.name}」的规格：全部选填、仅描述用途，不进 SKU 指纹`)
+}
 
 async function startNew(t: any) {
   rootType.value = await loadType(t.id)
@@ -57,6 +78,7 @@ async function startNew(t: any) {
   currentPath.value = []
   draftId.value = null
   editingSkuId.value = null
+  partSpecId.value = null
 }
 
 async function startFromSku(skuId: number, editing = false) {
@@ -141,7 +163,8 @@ const progressPct = computed(() =>
   progress.value.total === 0 ? 100 : Math.round((progress.value.done / progress.value.total) * 100))
 
 watch(rootState, () => {
-  if (rootState.value && rootType.value) {
+  // 部件规格模式不查重/不试算指纹（规格仅描述、不进指纹）
+  if (rootState.value && rootType.value && !partSpecId.value) {
     trigger(() => toPayload(rootType.value!.id, rootState.value!))
   }
 }, { deep: true })
@@ -400,6 +423,21 @@ async function updateSku() {
   }
 }
 
+async function saveSpec() {
+  if (!rootState.value || !rootType.value || !partSpecId.value) return
+  saving.value = true
+  try {
+    await api.patch(`/purchased-parts/${partSpecId.value}`, {
+      spec_config: toPayload(rootType.value.id, rootState.value),
+      spec_note: specNote.value || null,
+    })
+    ElMessage.success(`「${partSpecName.value}」规格已保存`)
+    router.push('/suppliers')
+  } catch { /* 拦截器提示 */ } finally {
+    saving.value = false
+  }
+}
+
 async function promptPrice(sku: any) {
   try {
     const { value } = await ElMessageBox.prompt(
@@ -653,7 +691,33 @@ const serverComplete = computed(() => result.value?.complete === true)
     <!-- 右：进度 / 命中 / 动作 -->
     <el-col :span="7" style="height: 100%">
       <el-card style="height: 100%; overflow: auto">
-        <template #header>配置摘要</template>
+        <template #header>{{ partSpecId ? '部件规格' : '配置摘要' }}</template>
+
+        <!-- 灰盒·部件规格模式：全选填、仅描述、不进指纹 -->
+        <template v-if="partSpecId">
+          <el-alert
+            type="warning" :closable="false" show-icon style="margin-bottom: 12px"
+            :title="`编辑「${partSpecName}」的规格`"
+            description="全部选填，只为记录这件成品采购件的内部规格；不进 SKU 指纹、不参与报价。"
+          />
+          <h4 style="margin-top: 0">自由规格（纯文本）</h4>
+          <el-input
+            v-model="specNote" type="textarea" :rows="3"
+            placeholder="结构化属性之外的补充，如：出口认证 CE、材质说明、厂家备注…（可空）"
+          />
+          <el-divider />
+          <el-button type="primary" style="width: 100%" :loading="saving" @click="saveSpec">
+            保存规格
+          </el-button>
+          <el-button style="width: 100%; margin-top: 8px" @click="router.push('/suppliers')">
+            放弃 · 返回供应商与采购件
+          </el-button>
+          <p style="font-size: 12px; color: var(--el-text-color-secondary); margin-top: 10px">
+            左侧/中间像配置看板一样填这件的属性与子部件——但这里全是选填，填多少看你想记多少。
+          </p>
+        </template>
+
+        <template v-else>
         <el-alert
           v-if="editingSkuId" type="warning" :closable="false" show-icon style="margin-bottom: 10px"
           :title="`修改模式：原 ${editingSkuCode}`"
@@ -721,6 +785,7 @@ const serverComplete = computed(() => result.value?.complete === true)
         <div v-if="validating" style="margin-top: 8px; color: var(--el-text-color-secondary); font-size: 12px">
           校验中…
         </div>
+        </template>
       </el-card>
     </el-col>
   </el-row>

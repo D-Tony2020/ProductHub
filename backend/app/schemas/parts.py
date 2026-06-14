@@ -47,6 +47,7 @@ class PurchasedPartIn(BaseModel):
 class PurchasedPartUpdate(BaseModel):
     name: str | None = Field(default=None, max_length=200)
     spec_note: str | None = None
+    spec_config: dict | None = None  # 灰盒结构化规格(可选配置树)；传入即覆盖
 
 
 class PurchasedPartOut(BaseModel):
@@ -58,6 +59,7 @@ class PurchasedPartOut(BaseModel):
     supplier_name: str = ""
     name: str
     spec_note: str | None
+    spec_config: dict | None = None   # 灰盒结构化规格
     status: str
     merged_into_id: int | None
     reference_count: int = 0
