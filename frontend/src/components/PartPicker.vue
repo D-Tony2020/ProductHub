@@ -64,8 +64,14 @@ watch(() => form.value.name, (name) => {
   }, 400)
 })
 
+function partSpec(row: any): string {
+  return [row.spec_summary, row.spec_note].filter(Boolean).join('；')
+}
 function pick(row: any) {
-  emit('selected', { id: row.id, label: `${row.supplier_name} | ${row.name}` })
+  const spec = partSpec(row)
+  // 把规格并入 label：配置看板槽位与 SKU 即可见（灰盒渐进披露），spec 仅描述不入指纹
+  const label = `${row.supplier_name} | ${row.name}${spec ? `（规格：${spec}）` : ''}`
+  emit('selected', { id: row.id, label })
   emit('update:visible', false)
 }
 
@@ -96,9 +102,15 @@ async function create() {
     <template v-if="!creating">
       <el-input v-model="search" placeholder="按供应商 / 件名搜索…" clearable style="margin-bottom: 10px" />
       <el-table :data="rows" v-loading="loading" height="320" @row-dblclick="pick">
-        <el-table-column prop="name" label="件名" min-width="180" />
-        <el-table-column prop="supplier_name" label="供应商" width="140" />
-        <el-table-column prop="reference_count" label="被引用" width="80" />
+        <el-table-column prop="name" label="件名" min-width="150" />
+        <el-table-column prop="supplier_name" label="供应商" width="120" />
+        <el-table-column label="规格" min-width="160">
+          <template #default="{ row }">
+            <span v-if="partSpec(row)" style="font-size: 12px; color: var(--el-text-color-secondary)">{{ partSpec(row) }}</span>
+            <span v-else style="font-size: 12px; color: var(--el-text-color-placeholder)">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="reference_count" label="被引用" width="70" />
         <el-table-column label="状态" width="90">
           <template #default="{ row }">
             <el-tag :type="row.status === 'active' ? 'success' : 'warning'" size="small">

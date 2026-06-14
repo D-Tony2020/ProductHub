@@ -37,6 +37,9 @@ class SkuNodeOut(BaseModel):
     # 采购来源：黑盒由成品件供应商派生；白盒由节点级供应商标注（方案甲，已入指纹）
     supplier_id: int | None = None
     supplier_name: str | None = None
+    # 灰盒成品件规格（仅黑盒节点）：渐进披露用，规格不入指纹
+    part_spec_note: str | None = None
+    part_spec_summary: str = ""
     attributes: list[SkuAttributeValueOut] = []
     children: list["SkuNodeOut"] = []
 

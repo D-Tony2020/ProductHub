@@ -60,6 +60,7 @@ class PurchasedPartOut(BaseModel):
     name: str
     spec_note: str | None
     spec_config: dict | None = None   # 灰盒结构化规格
+    spec_summary: str = ""            # spec_config 渲染的可读摘要（展示用）
     status: str
     merged_into_id: int | None
     reference_count: int = 0

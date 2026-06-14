@@ -226,7 +226,10 @@ function renderTreeText(node: any, depth = 0): string[] {
   const lines: string[] = []
   const head = node.slot_name ? `${node.slot_name}：` : ''
   if (node.mode === 'purchased') {
-    lines.push(`${pad}${head}【成品】${node.supplier_name} | ${node.purchased_part_name}`)
+    let line = `${pad}${head}【成品】${node.supplier_name} | ${node.purchased_part_name}`
+    const spec = [node.part_spec_summary, node.part_spec_note].filter(Boolean).join('；')
+    if (spec) line += `（规格：${spec}）`  // 灰盒渐进披露：黑盒件已补录的规格
+    lines.push(line)
   } else {
     const attrs = (node.attributes ?? [])
       .map((a: any) => `${a.attribute_name}=${a.option_label}${a.option_active ? '' : '（选项已停用）'}`)

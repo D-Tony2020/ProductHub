@@ -22,6 +22,7 @@ from app.schemas.parts import (
     SupplierUpdate,
 )
 from app.services.codes import next_code
+from app.services.graybox import summarize_spec
 from app.services.template_service import get_or_404
 
 router = APIRouter(tags=["parts"])
@@ -31,6 +32,7 @@ def _part_out(db: Session, part: PurchasedPart) -> PurchasedPartOut:
     out = PurchasedPartOut.model_validate(part)
     out.supplier_name = part.supplier.name if part.supplier else ""
     out.node_type_name = part.node_type.name if part.node_type else ""
+    out.spec_summary = summarize_spec(db, part.spec_config)
     out.reference_count = db.execute(
         select(func.count()).select_from(SkuConfigNode).where(
             SkuConfigNode.purchased_part_id == part.id

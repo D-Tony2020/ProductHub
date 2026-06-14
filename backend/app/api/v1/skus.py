@@ -38,6 +38,7 @@ from app.schemas.sku import (
     SkuUpdateResult,
 )
 from app.services.config_engine import _current_prices, create_sku
+from app.services.graybox import summarize_spec
 from app.services.health_engine import compute_health, load_sku_for_health
 from app.services.template_service import get_or_404
 
@@ -89,6 +90,8 @@ def _node_out(db: Session, node: SkuConfigNode) -> SkuNodeOut:
         purchased_part_name=part.name if part else None,
         supplier_id=supplier_id,
         supplier_name=supplier_name,
+        part_spec_note=part.spec_note if part else None,
+        part_spec_summary=summarize_spec(db, part.spec_config) if part else "",
         attributes=attrs,
         children=[
             _node_out(db, c)
