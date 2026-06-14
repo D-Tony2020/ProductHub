@@ -506,6 +506,7 @@ function priceRange(t: any): string | null {
           <div class="ov-name">{{ t.root_type_name }}</div>
           <div class="ov-count"><b>{{ t.sku_count }}</b><span>个 SKU</span></div>
           <div class="ov-badges">
+            <el-tag v-if="!t.slot_count && !t.attr_count" type="info" size="small">待建模</el-tag>
             <el-tag v-if="t.incomplete" type="danger" size="small" effect="dark">待治理 {{ t.incomplete }}</el-tag>
             <el-tag v-if="t.pending_price" type="warning" size="small">待录价 {{ t.pending_price }}</el-tag>
             <span v-if="!t.incomplete && !t.pending_price && t.sku_count" class="ov-ok">健康</span>
@@ -514,7 +515,10 @@ function priceRange(t: any): string | null {
             <span v-if="priceRange(t)" class="ov-price">{{ priceRange(t) }}</span>
             <span v-else class="ov-noprice">{{ t.sku_count ? '待录价' : '暂无 SKU' }}</span>
           </div>
-          <div class="ov-dims">选配维度 · {{ t.slot_count }} 部件槽 · {{ t.attr_count }} 属性轴</div>
+          <div class="ov-dims">
+            <template v-if="t.slot_count || t.attr_count">选配维度 · {{ t.slot_count }} 部件槽 · {{ t.attr_count }} 属性轴</template>
+            <span v-else class="ov-unmodeled">待建模 · 去「系统设置 · 产品模板」建属性与部件槽</span>
+          </div>
         </el-card>
       </div>
     </template>
@@ -768,5 +772,6 @@ function priceRange(t: any): string | null {
 .ov-noprice { font-size: 12px; color: var(--el-text-color-placeholder); }
 .ov-dims { font-size: 11px; color: var(--el-text-color-secondary); margin-top: 8px;
   border-top: 0.5px solid var(--el-border-color-lighter); padding-top: 8px; }
+.ov-unmodeled { color: var(--el-color-warning); }
 .ov-foot { font-size: 12px; color: var(--el-text-color-secondary); margin-top: 14px; }
 </style>
