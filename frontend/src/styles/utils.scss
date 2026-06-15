@@ -1,0 +1,48 @@
+// 全局工具类与极少全局规则。详见 frontend/DESIGN.md。
+
+// 等宽数字：表格 / 价格 / 交期 / 计数 / SKU 件号不跳动（B2B 专业感最廉价提升）
+.ph-num {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum';
+}
+.ph-price {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  color: var(--ph-success);
+}
+
+// 数据表格表头 · 克制密度（全局，仅配色/字重，不改结构）
+.el-table th.el-table__cell {
+  background: var(--ph-gray-50);
+  color: var(--ph-gray-600);
+  font-weight: 500;
+}
+// 表格内数字等宽对齐（价格/计数/交期/编码不跳动）——仅影响数字字形，不改文本
+.el-table {
+  font-variant-numeric: tabular-nums;
+}
+
+// 紧凑密度：表格行内边距收紧（配合 --el-component-size）
+html[data-density='compact'] .el-table .el-table__cell {
+  padding-top: 5px;
+  padding-bottom: 5px;
+}
+
+// ===== Tier-A 动效工具类（纯 CSS + 令牌驱动，零依赖；详见 DESIGN.md）=====
+.ph-fade { animation: ph-fade var(--ph-duration-base) var(--ph-ease); }
+.ph-slide-up { animation: ph-slide-up var(--ph-duration-base) var(--ph-ease); }
+.ph-zoom-in { animation: ph-zoom-in var(--ph-duration-base) var(--ph-ease); }
+@keyframes ph-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes ph-slide-up { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes ph-zoom-in { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: none; } }
+
+// 注：页面级路由过渡需单根组件，本项目页面多为多根模板，不在路由出口套 transition；
+// 页面内动效改用上方 .ph-fade/.ph-slide-up 等工具类按元素局部应用（P4 逐屏铺开）。
+
+// 尊重"减少动效"无障碍偏好
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --ph-duration-fast: 0ms;
+    --ph-duration-base: 0ms;
+  }
+}

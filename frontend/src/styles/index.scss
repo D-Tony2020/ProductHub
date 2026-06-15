@@ -1,0 +1,23 @@
+// 唯一主题入口。@forward 必须在 @use EP 之前——EP 的 primary/语义 light-3..9 浅深梯度由
+// theme-chalk/src/common/var.scss 在「编译期」用 color.mix 生成，运行时改单个 --el-* 不会重算整条梯度。
+// 详见 frontend/DESIGN.md。
+
+@forward 'element-plus/theme-chalk/src/common/var.scss' with (
+  $colors: (
+    'primary': ('base': #1f4e79),
+    'success': ('base': #12b76a),
+    'warning': ('base': #f79009),
+    'danger': ('base': #d92d20),
+    'error': ('base': #d92d20),
+    'info': ('base': #667085)
+  ),
+  $border-radius: (
+    'base': 8px,
+    'small': 6px,
+    'round': 6px
+  )
+);
+
+@use 'element-plus/theme-chalk/src/index.scss' as *;
+@use './tokens';
+@use './utils';

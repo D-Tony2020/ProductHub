@@ -1,0 +1,113 @@
+// 设计令牌真值层（--ph-*）+ 重绑 Element Plus 中性/字体/阴影变量。
+// 品牌主色 / 语义色 / 圆角的浅深梯度由 index.scss 的 @forward 在编译期生成，此处不重复覆盖。
+// 详见 frontend/DESIGN.md。
+
+:root {
+  // ===== 品牌 · 工业蓝 =====
+  --ph-brand-700: #16385a; // 按下
+  --ph-brand-600: #1f4e79; // 主色
+  --ph-brand-500: #2c6aa0; // hover
+
+  // ===== 中性灰阶 · 9 级（Carbon + Geist 混合）=====
+  --ph-gray-0: #ffffff;
+  --ph-gray-50: #f7f8fa;
+  --ph-gray-100: #eff1f4;
+  --ph-gray-200: #e4e7ec;
+  --ph-gray-300: #d0d5dd;
+  --ph-gray-400: #98a2b3;
+  --ph-gray-500: #667085;
+  --ph-gray-600: #475467;
+  --ph-gray-700: #344054;
+  --ph-gray-900: #101828;
+
+  // ===== 语义色（前景 + EP 自带 -light-9 浅底）=====
+  --ph-success: #12b76a;
+  --ph-warning: #f79009;
+  --ph-warning-fg: #93370d; // 浅底上的警告文字
+  --ph-error: #d92d20;
+  --ph-info: #1570ef; // 链接蓝（EP info 走中性灰，见 index.scss）
+
+  // ===== 排版 =====
+  --ph-font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Microsoft YaHei', 'Source Han Sans SC', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --ph-font-mono: 'SF Mono', 'JetBrains Mono', Menlo, Consolas, 'Courier New', monospace;
+  --ph-font-size-xs: 12px;
+  --ph-font-size-sm: 13px;
+  --ph-font-size-base: 14px;
+  --ph-font-size-lg: 16px;
+  --ph-font-size-xl: 20px;
+  --ph-font-size-2xl: 24px;
+  --ph-font-size-3xl: 30px;
+
+  // ===== 间距 · 4px 网格 =====
+  --ph-space-1: 4px;
+  --ph-space-2: 8px;
+  --ph-space-3: 12px;
+  --ph-space-4: 16px;
+  --ph-space-5: 20px;
+  --ph-space-6: 24px;
+  --ph-space-8: 32px;
+
+  // ===== 圆角 =====
+  --ph-radius-xs: 4px;
+  --ph-radius-sm: 6px;
+  --ph-radius-md: 8px;
+  --ph-radius-full: 9999px;
+
+  // ===== 阴影 · 4 档（映射 M3 标高）=====
+  --ph-shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06), 0 1px 3px rgba(16, 24, 40, 0.04);
+  --ph-shadow-md: 0 2px 8px rgba(16, 24, 40, 0.08);
+  --ph-shadow-lg: 0 8px 24px rgba(16, 24, 40, 0.12);
+  --ph-shadow-overlay: 0 16px 48px rgba(16, 24, 40, 0.18);
+
+  // ===== 动效 =====
+  --ph-duration-fast: 150ms;
+  --ph-duration-base: 200ms;
+  --ph-ease: cubic-bezier(0.2, 0, 0, 1);
+
+  // ===== 重绑 Element Plus（中性/字体/阴影；primary·语义·圆角已由 @forward 生成）=====
+  --el-text-color-primary: var(--ph-gray-900);
+  --el-text-color-regular: var(--ph-gray-700);
+  --el-text-color-secondary: var(--ph-gray-600);
+  --el-text-color-placeholder: var(--ph-gray-500);
+  --el-text-color-disabled: var(--ph-gray-400);
+
+  --el-border-color-darker: var(--ph-gray-400);
+  --el-border-color-dark: var(--ph-gray-400);
+  --el-border-color: var(--ph-gray-300);
+  --el-border-color-light: var(--ph-gray-200);
+  --el-border-color-lighter: var(--ph-gray-200);
+  --el-border-color-extra-light: var(--ph-gray-100);
+
+  --el-fill-color-darker: var(--ph-gray-200);
+  --el-fill-color-dark: var(--ph-gray-200);
+  --el-fill-color: var(--ph-gray-100);
+  --el-fill-color-light: var(--ph-gray-50);
+  --el-fill-color-lighter: var(--ph-gray-50);
+  --el-fill-color-extra-light: var(--ph-gray-50);
+  --el-fill-color-blank: var(--ph-gray-0);
+
+  --el-bg-color: var(--ph-gray-0);
+  --el-bg-color-page: var(--ph-gray-50);
+  --el-bg-color-overlay: var(--ph-gray-0);
+
+  --el-box-shadow: var(--ph-shadow-sm);
+  --el-box-shadow-light: var(--ph-shadow-sm);
+  --el-box-shadow-lighter: var(--ph-shadow-md);
+  --el-box-shadow-dark: var(--ph-shadow-lg);
+
+  --el-font-family: var(--ph-font-sans);
+}
+
+// 按钮单独锁 6px 圆角（让卡片/弹层保持 8px）
+.el-button {
+  --el-border-radius-base: var(--ph-radius-sm);
+}
+
+// ===== 紧凑密度（管理员·重数据密度）：仅覆盖变量，零页面 template 改动 =====
+html[data-density='compact'] {
+  --el-component-size: 28px;
+  --el-component-size-small: 24px;
+  --el-component-size-large: 36px;
+  --ph-space-4: 12px; // 卡片标准内边距收紧 16→12
+}

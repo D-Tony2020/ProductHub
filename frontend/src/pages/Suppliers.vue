@@ -8,6 +8,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 
 import { api } from '../api/client'
 import PartsTable from '../components/PartsTable.vue'
+import StatCard from '../components/StatCard.vue'
 import { useAuthStore } from '../stores/auth'
 
 const auth = useAuthStore()
@@ -184,10 +185,10 @@ async function submitCreate() {
 
         <!-- 看板指标卡 -->
         <div class="dash">
-          <div class="dash-card c1"><div class="dash-num">{{ selected.procurement_items }}</div><div class="dash-label">采购项</div></div>
-          <div class="dash-card c2"><div class="dash-num">{{ selected.assembly_count }}</div><div class="dash-label">整机供应</div></div>
-          <div class="dash-card c3"><div class="dash-num">{{ selected.component_count }}</div><div class="dash-label">部件供应</div></div>
-          <div class="dash-card c4"><div class="dash-num">{{ selected.linked_skus }}</div><div class="dash-label">关联成品（在售SKU）</div></div>
+          <StatCard label="采购项" tone="brand" :value="selected.procurement_items" />
+          <StatCard label="整机供应" tone="info" :value="selected.assembly_count" />
+          <StatCard label="部件供应" tone="warning" :value="selected.component_count" />
+          <StatCard label="关联成品" hint="在售SKU" tone="success" :value="selected.linked_skus" />
         </div>
 
         <el-tabs v-model="tab">
@@ -273,16 +274,9 @@ async function submitCreate() {
 .sc-rate { height: 14px; }
 .sc-metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
 .sc-metrics .m { text-align: center; background: var(--el-fill-color); border-radius: 5px; padding: 4px 2px; }
-.sc-metrics .m b { display: block; font-size: 15px; font-weight: 700; color: var(--el-color-primary); line-height: 1.2; }
+.sc-metrics .m b { display: block; font-size: 15px; font-weight: 600; color: var(--el-color-primary); line-height: 1.2; font-variant-numeric: tabular-nums; }
 .sc-metrics .m span { font-size: 10px; color: var(--el-text-color-secondary); white-space: nowrap; }
 
-/* 右侧看板指标卡 */
+/* 右侧看板指标卡（StatCard 统一） */
 .dash { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
-.dash-card { border-radius: 10px; padding: 16px; color: #fff; }
-.dash-card.c1 { background: linear-gradient(135deg, #409eff, #66b1ff); }
-.dash-card.c2 { background: linear-gradient(135deg, #67c23a, #85ce61); }
-.dash-card.c3 { background: linear-gradient(135deg, #e6a23c, #ebb563); }
-.dash-card.c4 { background: linear-gradient(135deg, #909399, #a6a9ad); }
-.dash-num { font-size: 28px; font-weight: 700; line-height: 1.2; }
-.dash-label { font-size: 13px; opacity: 0.92; margin-top: 4px; }
 </style>

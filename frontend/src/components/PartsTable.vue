@@ -7,6 +7,7 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 import { api } from '../api/client'
+import { PART_STATUS as statusMap } from '../constants/status'
 import { useAuthStore } from '../stores/auth'
 import PartDetailDrawer from './PartDetailDrawer.vue'
 
@@ -154,12 +155,6 @@ async function submitCreate() {
   } catch { /* 拦截器提示 */ }
 }
 
-const statusMap: Record<string, { label: string; type: string }> = {
-  draft: { label: '草稿', type: 'warning' },
-  active: { label: '正式', type: 'success' },
-  merged: { label: '已合并', type: 'info' },
-  retired: { label: '已停用', type: 'info' },
-}
 </script>
 
 <template>

@@ -7,6 +7,7 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { api } from '../api/client'
+import StatCard from '../components/StatCard.vue'
 import { useAuthStore } from '../stores/auth'
 import { useQuoteCartStore } from '../stores/quoteCart'
 
@@ -304,28 +305,17 @@ function priceRange(t: any): string | null {
   <template v-if="homeView === 'shelf'">
   <!-- 统计带 -->
   <div class="stat-band">
-    <div class="stat-card">
-      <div class="stat-label">在售 SKU</div>
-      <div class="stat-value">{{ stats.active }}</div>
-    </div>
-    <div class="stat-card clickable" :class="{ warn: stats.pending_price > 0 }"
-         @click="selectQuick('pending')">
-      <div class="stat-label">待录价 <el-icon><Goods /></el-icon></div>
-      <div class="stat-value">{{ stats.pending_price }}</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">近 7 天新增</div>
-      <div class="stat-value">{{ stats.new_this_week }}</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">30 天未调价</div>
-      <div class="stat-value">{{ stats.stale_30d }}</div>
-    </div>
-    <div class="stat-card clickable" :class="{ danger: stats.incomplete > 0 }"
-         @click="selectQuick('incomplete')">
-      <div class="stat-label">待治理 <el-icon><WarningFilled /></el-icon></div>
-      <div class="stat-value">{{ stats.incomplete }}</div>
-    </div>
+    <StatCard label="在售 SKU" :value="stats.active" />
+    <StatCard
+      label="待录价" :value="stats.pending_price" clickable @click="selectQuick('pending')"
+      :tone="stats.pending_price > 0 ? 'warning' : 'default'" :alert="stats.pending_price > 0"
+    />
+    <StatCard label="近 7 天新增" :value="stats.new_this_week" />
+    <StatCard label="30 天未调价" :value="stats.stale_30d" />
+    <StatCard
+      label="待治理" :value="stats.incomplete" clickable @click="selectQuick('incomplete')"
+      :tone="stats.incomplete > 0 ? 'danger' : 'default'" :alert="stats.incomplete > 0"
+    />
   </div>
 
   <el-row :gutter="12">
@@ -443,7 +433,7 @@ function priceRange(t: any): string | null {
           <el-table-column prop="name" label="名称 / 规格摘要" min-width="260" />
           <el-table-column label="现价" width="120">
             <template #default="{ row }">
-              <b v-if="priceText(row)" style="color: var(--el-color-success)">{{ priceText(row) }}</b>
+              <b v-if="priceText(row)" class="ph-num" style="color: var(--el-color-success)">{{ priceText(row) }}</b>
               <el-tag v-else type="warning" size="small">待录价</el-tag>
             </template>
           </el-table-column>
@@ -492,10 +482,10 @@ function priceRange(t: any): string | null {
   <!-- 产品全貌：按品类聚合的卡片墙（比 SKU 粗一档）-->
   <template v-else>
     <div class="stat-band ov-band">
-      <div class="stat-card"><div class="stat-label">产品类型(有货)</div><div class="stat-value">{{ ovStats.types }}</div></div>
-      <div class="stat-card"><div class="stat-label">SKU 总数</div><div class="stat-value">{{ ovStats.skus }}</div></div>
-      <div class="stat-card" :class="{ warn: ovStats.pending > 0 }"><div class="stat-label">待录价</div><div class="stat-value">{{ ovStats.pending }}</div></div>
-      <div class="stat-card" :class="{ danger: ovStats.incomplete > 0 }"><div class="stat-label">待治理</div><div class="stat-value">{{ ovStats.incomplete }}</div></div>
+      <StatCard label="产品类型(有货)" :value="ovStats.types" />
+      <StatCard label="SKU 总数" :value="ovStats.skus" />
+      <StatCard label="待录价" :value="ovStats.pending" :tone="ovStats.pending > 0 ? 'warning' : 'default'" :alert="ovStats.pending > 0" />
+      <StatCard label="待治理" :value="ovStats.incomplete" :tone="ovStats.incomplete > 0 ? 'danger' : 'default'" :alert="ovStats.incomplete > 0" />
     </div>
 
     <template v-for="grp in [
@@ -516,7 +506,7 @@ function priceRange(t: any): string | null {
             <span v-if="!t.incomplete && !t.pending_price && t.sku_count" class="ov-ok">健康</span>
           </div>
           <div class="ov-meta">
-            <span v-if="priceRange(t)" class="ov-price">{{ priceRange(t) }}</span>
+            <span v-if="priceRange(t)" class="ov-price ph-num">{{ priceRange(t) }}</span>
             <span v-else class="ov-noprice">{{ t.sku_count ? '待录价' : '暂无 SKU' }}</span>
           </div>
           <div class="ov-dims">
@@ -539,7 +529,7 @@ function priceRange(t: any): string | null {
         <el-tag :type="drawer.sku.status === 'active' ? 'success' : 'info'">
           {{ drawer.sku.status === 'active' ? '在售' : '已作废' }}
         </el-tag>
-        <span v-if="priceText(drawer.sku)" style="font-size: 22px; margin-left: 12px; color: var(--el-color-success)">
+        <span v-if="priceText(drawer.sku)" class="ph-num" style="font-size: 24px; margin-left: 12px; color: var(--el-color-success)">
           {{ priceText(drawer.sku) }}
         </span>
         <el-tag v-else type="warning" style="margin-left: 12px">待录价</el-tag>
@@ -691,19 +681,6 @@ function priceRange(t: any): string | null {
   gap: 10px;
   margin-bottom: 12px;
 }
-.stat-card {
-  background: var(--el-bg-color);
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 8px;
-  padding: 10px 14px;
-}
-.stat-card.clickable { cursor: pointer; }
-.stat-card.clickable:hover { border-color: var(--el-color-primary); }
-.stat-card.warn { background: var(--el-color-warning-light-9); }
-.stat-card.danger { background: var(--el-color-danger-light-9); }
-.stat-card.danger:hover { border-color: var(--el-color-danger); }
-.stat-label { font-size: 12px; color: var(--el-text-color-secondary); }
-.stat-value { font-size: 24px; font-weight: 500; margin-top: 2px; }
 
 .side-title { font-size: 12px; color: var(--el-text-color-secondary); margin-bottom: 4px; }
 .side-group { font-weight: 500; margin: 6px 0 2px; font-size: 13px; }
@@ -714,7 +691,7 @@ function priceRange(t: any): string | null {
 .side-item:hover { background: var(--el-fill-color-light); }
 .side-item.active { background: var(--el-color-primary-light-9); color: var(--el-color-primary); }
 .side-item.indent { padding-left: 16px; }
-.side-item .cnt { color: var(--el-text-color-secondary); font-size: 12px; }
+.side-item .cnt { color: var(--el-text-color-secondary); font-size: 12px; font-variant-numeric: tabular-nums; }
 
 .card-grid {
   display: grid;
@@ -726,14 +703,14 @@ function priceRange(t: any): string | null {
   height: 60px; display: flex; align-items: center; justify-content: center;
   background: var(--el-fill-color-light); border-radius: 6px; color: var(--el-text-color-secondary);
 }
-.sku-code { font-weight: 500; font-size: 13px; margin-top: 8px; }
+.sku-code { font-weight: 500; font-size: 13px; margin-top: 8px; font-family: var(--ph-font-mono); font-variant-numeric: tabular-nums; }
 .sku-name {
   font-size: 12px; color: var(--el-text-color-secondary); margin: 2px 0 6px;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
   min-height: 32px;
 }
 .sku-foot { display: flex; align-items: center; gap: 6px; min-height: 24px; }
-.sku-foot .price { color: var(--el-color-success); font-size: 16px; }
+.sku-foot .price { color: var(--el-color-success); font-size: 16px; font-variant-numeric: tabular-nums; }
 .sku-actions { display: flex; gap: 4px; margin-top: 8px; }
 
 .price-thumb {
@@ -760,14 +737,14 @@ function priceRange(t: any): string | null {
 /* 产品库视图切换 + 产品全貌 */
 .home-toggle { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
 .toggle-hint { font-size: 12px; color: var(--el-text-color-secondary); }
-.stat-card.danger { background: var(--el-color-danger-light-9); }
+.ov-band { grid-template-columns: repeat(4, 1fr); }
 .ov-group { font-weight: 500; font-size: 14px; margin: 14px 0 8px; color: var(--el-text-color-primary); }
 .ov-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
 .ov-card { cursor: pointer; transition: border-color .15s; }
 .ov-card.empty { opacity: 0.6; }
 .ov-name { font-size: 15px; font-weight: 500; }
 .ov-count { margin: 6px 0 8px; }
-.ov-count b { font-size: 26px; font-weight: 600; }
+.ov-count b { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .ov-count span { font-size: 12px; color: var(--el-text-color-secondary); margin-left: 4px; }
 .ov-badges { display: flex; gap: 6px; align-items: center; min-height: 22px; flex-wrap: wrap; }
 .ov-ok { font-size: 12px; color: var(--el-color-success); }

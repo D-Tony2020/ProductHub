@@ -170,7 +170,8 @@ async function duplicateQuote(q: any) {
             </span>
           </div>
         </template>
-        <el-table :data="current.items">
+        <el-table :data="current.items"
+                  :row-class-name="({ row }: { row: any }) => (row.price_changed ? 'row-price-changed' : '')">
           <el-table-column prop="sku_code" label="SKU" width="140" />
           <el-table-column prop="sku_name" label="品名/规格" min-width="220" />
           <el-table-column label="数量" width="130">
@@ -204,8 +205,9 @@ async function duplicateQuote(q: any) {
             </template>
           </el-table-column>
         </el-table>
-        <div style="text-align: right; margin-top: 10px; font-size: 18px">
-          合计：<b>{{ current.currency }} {{ current.total }}</b>
+        <div class="settle-bar">
+          <span class="settle-meta">{{ current.items.length }} 项明细</span>
+          <span class="settle-total">合计 <b class="ph-num">{{ current.currency }} {{ current.total }}</b></span>
         </div>
         <p style="color: var(--el-text-color-secondary); font-size: 12px">
           同一单据内禁止混币种；不符币种或待录价的 SKU 无法加入。导出后单据冻结，保证对外文件与系统记录一一对应。
@@ -252,4 +254,18 @@ async function duplicateQuote(q: any) {
 .quote-item.active {
   background: var(--el-color-primary-light-9);
 }
+
+/* 结算条 */
+.settle-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  background: var(--el-fill-color-light);
+  border: 1px solid var(--el-border-color-light);
+  border-radius: var(--ph-radius-md);
+  padding: 12px 16px; margin-top: 12px;
+}
+.settle-meta { font-size: 13px; color: var(--el-text-color-secondary); }
+.settle-total { font-size: 15px; color: var(--el-text-color-secondary); }
+.settle-total b { font-size: 22px; font-weight: 600; color: var(--el-text-color-primary); margin-left: 6px; }
+/* 价变行浅警告底 */
+:deep(.el-table .row-price-changed td.el-table__cell) { background: var(--el-color-warning-light-9); }
 </style>

@@ -7,7 +7,9 @@ import { reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 import { api } from '../api/client'
+import { PART_STATUS as statusMap } from '../constants/status'
 import { useAuthStore } from '../stores/auth'
+import StatCard from './StatCard.vue'
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -18,12 +20,6 @@ const emit = defineEmits<{ (e: 'update:modelValue', v: boolean): void; (e: 'chan
 const part = ref<any | null>(null)
 const loading = ref(false)
 
-const statusMap: Record<string, { label: string; type: string }> = {
-  draft: { label: '草稿（待审核）', type: 'warning' },
-  active: { label: '正式', type: 'success' },
-  merged: { label: '已合并', type: 'info' },
-  retired: { label: '已停用', type: 'info' },
-}
 
 async function load() {
   if (props.partId == null) return
@@ -138,18 +134,13 @@ async function createDirectSku() {
 
         <!-- 关键指标卡 -->
         <div class="pd-stats">
-          <div class="pd-stat">
-            <div class="pd-stat-num">{{ part.lead_time_days != null ? part.lead_time_days : '—' }}<span v-if="part.lead_time_days != null" class="unit">天</span></div>
-            <div class="pd-stat-label">参考交期</div>
-          </div>
-          <div class="pd-stat">
-            <div class="pd-stat-num">{{ part.reference_count }}</div>
-            <div class="pd-stat-label">被引用 SKU</div>
-          </div>
-          <div class="pd-stat">
-            <div class="pd-stat-num">{{ part.node_type_name }}</div>
-            <div class="pd-stat-label">{{ isAssembly() ? '整机品类' : '部件类型' }}</div>
-          </div>
+          <StatCard
+            :label="'参考交期'" tone="brand"
+            :value="part.lead_time_days != null ? part.lead_time_days : '—'"
+            :unit="part.lead_time_days != null ? '天' : ''"
+          />
+          <StatCard :label="'被引用 SKU'" tone="brand" :value="part.reference_count" />
+          <StatCard :label="isAssembly() ? '整机品类' : '部件类型'" :value="part.node_type_name" />
         </div>
 
         <!-- 基本信息 -->
@@ -224,10 +215,7 @@ async function createDirectSku() {
 .pd-title { font-size: 18px; font-weight: 600; margin-bottom: 6px; }
 .pd-sub { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--el-text-color-secondary); }
 .pd-stats { display: flex; gap: 10px; margin-bottom: 16px; }
-.pd-stat { flex: 1; background: var(--el-fill-color-light); border-radius: 8px; padding: 12px; text-align: center; }
-.pd-stat-num { font-size: 20px; font-weight: 600; color: var(--el-color-primary); line-height: 1.3; }
-.pd-stat-num .unit { font-size: 12px; font-weight: 400; margin-left: 2px; }
-.pd-stat-label { font-size: 12px; color: var(--el-text-color-secondary); margin-top: 4px; }
+.pd-stats > * { flex: 1; }
 .pd-section { margin-bottom: 18px; }
 .pd-section-head { display: flex; justify-content: space-between; align-items: center; font-weight: 600; font-size: 14px; margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--el-border-color-lighter); }
 .pd-spec { font-size: 13px; line-height: 1.6; }

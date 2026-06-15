@@ -644,7 +644,7 @@ const serverComplete = computed(() => result.value?.complete === true)
 
         <template v-if="currentNode && currentMeta">
           <template v-if="currentMeta.attributes.length">
-            <h4>规格参数</h4>
+            <h4 class="cfg-h4">规格参数</h4>
             <el-form label-width="110px">
               <el-form-item
                 v-for="a in currentMeta.attributes" :key="a.id"
@@ -671,7 +671,7 @@ const serverComplete = computed(() => result.value?.complete === true)
             </el-form>
           </template>
 
-          <h4>采购来源
+          <h4 class="cfg-h4">采购来源
             <span style="font-size: 12px; color: var(--el-text-color-secondary); font-weight: 400">
               （非必选 · 标注后即区分为不同 SKU，改来源 = 新货）
             </span>
@@ -684,7 +684,7 @@ const serverComplete = computed(() => result.value?.complete === true)
           </el-select>
 
           <template v-if="currentMeta.slots.length">
-            <h4>部件</h4>
+            <h4 class="cfg-h4">部件</h4>
 
             <!-- 互斥槽组：变体 N 选 1 -->
             <el-card
@@ -817,7 +817,7 @@ const serverComplete = computed(() => result.value?.complete === true)
         <el-progress :percentage="progressPct" :status="progressPct === 100 ? 'success' : undefined" />
 
         <template v-if="issues.length">
-          <h4>待完成（{{ issues.length }}）</h4>
+          <h4 class="cfg-h4">待完成（{{ issues.length }}）</h4>
           <div v-for="(i, idx) in issues" :key="idx" style="font-size: 13px; margin-bottom: 4px">
             <el-tag :type="i.kind === 'error' ? 'danger' : 'warning'" size="small">
               {{ i.kind === 'error' ? '错误' : '缺' }}
@@ -847,7 +847,7 @@ const serverComplete = computed(() => result.value?.complete === true)
             <el-alert type="success" :closable="false" title="该配置已存在">
               <p style="font-size: 15px"><b>{{ matched.sku_code }}</b>（{{ matched.status === 'active' ? '在售' : '已作废' }}）</p>
               <p>{{ matched.name }}</p>
-              <p v-if="matched.current_prices.length" style="font-size: 18px; color: var(--el-color-success)">
+              <p v-if="matched.current_prices.length" class="ph-num" style="font-size: 20px; color: var(--el-color-success)">
                 {{ matched.current_prices[0].currency }} {{ matched.current_prices[0].price }}
                 <small>（{{ matched.current_prices[0].valid_from }} 起生效）</small>
               </p>
@@ -888,3 +888,15 @@ const serverComplete = computed(() => result.value?.complete === true)
     @selected="onPartSelected"
   />
 </template>
+
+<style scoped>
+/* 配置看板段标题：工业蓝竖条 + 统一字重间距（取代散落的裸 h4） */
+.cfg-h4 {
+  font-size: var(--ph-font-size-base);
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+  border-left: 3px solid var(--ph-brand-600);
+  padding-left: 8px;
+  margin: 18px 0 10px;
+}
+</style>

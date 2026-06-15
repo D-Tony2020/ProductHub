@@ -4,6 +4,16 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>ProductHub 产品中台</title>
+    <script>
+      // 挂载前应用持久化的密度/暗色偏好，避免首帧闪烁(FOUC)
+      (function () {
+        try {
+          var d = localStorage.getItem('ph-density');
+          if (d === 'compact') document.documentElement.setAttribute('data-density', 'compact');
+          if (localStorage.getItem('ph-dark') === '1') document.documentElement.classList.add('dark');
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="app"></div>

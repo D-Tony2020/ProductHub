@@ -54,6 +54,6 @@ async function submit() {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #1f3a5f 0%, #2c5f8a 100%);
+  background: linear-gradient(135deg, var(--ph-brand-700) 0%, var(--ph-brand-500) 100%);
 }
 </style>
