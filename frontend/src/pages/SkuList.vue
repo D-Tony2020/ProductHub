@@ -248,7 +248,8 @@ function sourcingRows(tree: any): { label: string; supplier: string | null; blac
     if (!isRoot) {
       rows.push({ label, supplier: node.supplier_name ?? null, black: node.mode === 'purchased' })
     } else if (node.supplier_name) {
-      rows.push({ label: `${node.node_type_name}（整机）`, supplier: node.supplier_name, black: false })
+      // 整机直采根=黑盒整机；白盒根带供应商标注=非黑盒
+      rows.push({ label: `${node.node_type_name}（整机）`, supplier: node.supplier_name, black: node.mode === 'purchased' })
     }
     for (const c of node.children ?? []) walk(c, false)
   }
@@ -591,7 +592,7 @@ function priceRange(t: any): string | null {
         </el-tab-pane>
         <el-tab-pane label="价格历史">
           <el-table :data="drawer.prices"
-                    :row-class-name="({ row }) => (row.superseded ? 'price-superseded' : '')">
+                    :row-class-name="({ row }: { row: any }) => (row.superseded ? 'price-superseded' : '')">
             <el-table-column label="状态" width="80">
               <template #default="{ row }">
                 <el-tag v-if="row.superseded" size="small" type="info">已作废</el-tag>

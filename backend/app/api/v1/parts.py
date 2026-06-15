@@ -11,15 +11,18 @@ from sqlalchemy.orm import Session
 from app.core.audit import write_audit
 from app.core.db import get_db
 from app.core.security import get_current_user, require_admin
-from app.models import AppUser, NodeType, PurchasedPart, SkuConfigNode, Supplier
+from app.models import AppUser, NodeType, PurchasedPart, Sku, SkuConfigNode, Supplier
 from app.schemas.parts import (
+    LinkedSku,
     MergeIn,
     PartSpecUpdate,
+    PurchasedPartDetailOut,
     PurchasedPartIn,
     PurchasedPartOut,
     PurchasedPartUpdate,
     SupplierIn,
     SupplierOut,
+    SupplierOverviewOut,
     SupplierUpdate,
 )
 from app.services.codes import next_code
@@ -33,6 +36,7 @@ def _part_out(db: Session, part: PurchasedPart) -> PurchasedPartOut:
     out = PurchasedPartOut.model_validate(part)
     out.supplier_name = part.supplier.name if part.supplier else ""
     out.node_type_name = part.node_type.name if part.node_type else ""
+    out.node_type_kind = part.node_type.kind if part.node_type else ""
     out.spec_summary = summarize_spec(db, part.spec_config)
     out.reference_count = db.execute(
         select(func.count()).select_from(SkuConfigNode).where(
@@ -53,6 +57,44 @@ def list_suppliers(
     if not include_inactive:
         stmt = stmt.where(Supplier.is_active.is_(True))
     return db.execute(stmt).scalars().all()
+
+
+@router.get("/suppliers/overview", response_model=list[SupplierOverviewOut])
+def suppliers_overview(db: Session = Depends(get_db), _: AppUser = Depends(get_current_user)):
+    """供应商 + 用量指标（采购项/整机供应/部件供应/关联在售SKU）。一次性聚合，防 N+1。"""
+    suppliers = db.execute(select(Supplier).order_by(Supplier.name)).scalars().all()
+    # 采购项按 整机(product)/部件(part) 分类计数
+    item_rows = db.execute(text(
+        "SELECT pp.supplier_id sid, nt.kind kind, count(*) c "
+        "FROM purchased_part pp JOIN node_type nt ON nt.id = pp.node_type_id "
+        "WHERE pp.status IN ('draft','active') GROUP BY pp.supplier_id, nt.kind"
+    )).all()
+    items: dict[int, dict] = {}
+    for sid, kind, c in item_rows:
+        items.setdefault(sid, {})[kind] = c
+    # 关联在售 SKU：黑盒(经成品件)∪白盒(节点级供应商标注)，UNION 去重 (sku,supplier) 对
+    sku_rows = db.execute(text(
+        "SELECT supplier_id sid, count(DISTINCT sku_id) c FROM ("
+        "  SELECT pp.supplier_id, scn.sku_id FROM sku_config_node scn "
+        "    JOIN purchased_part pp ON pp.id = scn.purchased_part_id "
+        "    JOIN sku s ON s.id = scn.sku_id AND s.status = 'active' "
+        "  UNION "
+        "  SELECT scn.supplier_id, scn.sku_id FROM sku_config_node scn "
+        "    JOIN sku s ON s.id = scn.sku_id AND s.status = 'active' "
+        "    WHERE scn.supplier_id IS NOT NULL"
+        ") u GROUP BY supplier_id"
+    )).all()
+    skus = {sid: c for sid, c in sku_rows}
+    out: list[SupplierOverviewOut] = []
+    for s in suppliers:
+        it = items.get(s.id, {})
+        prod, part = it.get("product", 0), it.get("part", 0)
+        o = SupplierOverviewOut.model_validate(s)
+        o.assembly_count, o.component_count = prod, part
+        o.procurement_items = prod + part
+        o.linked_skus = skus.get(s.id, 0)
+        out.append(o)
+    return out
 
 
 @router.post("/suppliers", response_model=SupplierOut, status_code=201)
@@ -122,10 +164,21 @@ def list_parts(
     return [_part_out(db, p) for p in db.execute(stmt).scalars().all()]
 
 
-@router.get("/purchased-parts/by-id/{part_id}", response_model=PurchasedPartOut)
+@router.get("/purchased-parts/by-id/{part_id}", response_model=PurchasedPartDetailOut)
 def get_part(part_id: int, db: Session = Depends(get_db), _: AppUser = Depends(get_current_user)):
-    """单件详情（含灰盒规格 spec_config / spec_note）。供部件规格编辑器调用。"""
-    return _part_out(db, get_or_404(db, PurchasedPart, part_id))
+    """单件详情（含灰盒规格 + 关联在售/作废 SKU 列表）。供采购件详情页与规格编辑器调用。"""
+    part = get_or_404(db, PurchasedPart, part_id)
+    base = _part_out(db, part)
+    skus = db.execute(
+        select(Sku).join(SkuConfigNode, SkuConfigNode.sku_id == Sku.id)
+        .where(SkuConfigNode.purchased_part_id == part_id).distinct().order_by(Sku.id.desc())
+    ).scalars().all()
+    return PurchasedPartDetailOut(
+        **base.model_dump(),
+        linked_skus=[
+            LinkedSku(id=s.id, sku_code=s.sku_code, name=s.name, status=s.status) for s in skus
+        ],
+    )
 
 
 @router.get("/purchased-parts/similar", response_model=list[PurchasedPartOut])

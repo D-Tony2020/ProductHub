@@ -30,6 +30,10 @@ const rootType = ref<TypeMeta | null>(null)
 const rootState = ref<NodeState | null>(null)
 const draftId = ref<number | null>(null)
 
+// 整机直采（黑盒整机）：整台外购成品直接作为可售 SKU 的根，不走逐项配置
+const direct = reactive({ active: false, type: null as any, partId: null as number | null, partLabel: '' })
+const directPicker = reactive({ visible: false })
+
 // 当前编辑节点 = 沿槽 id 的路径
 const currentPath = ref<number[]>([])
 const { validating, result, trigger } = useValidator()
@@ -81,8 +85,57 @@ async function startNew(t: any) {
   partSpecId.value = null
 }
 
+// ---------- 整机直采（黑盒整机）----------
+function startDirect(t: any) {
+  direct.active = true
+  direct.type = t
+  direct.partId = null
+  direct.partLabel = ''
+  directPicker.visible = true
+}
+function onDirectPicked(part: { id: number; label: string }) {
+  direct.partId = part.id
+  direct.partLabel = part.label
+}
+function cancelDirect() {
+  direct.active = false
+  direct.type = null
+  direct.partId = null
+  direct.partLabel = ''
+}
+async function createDirect() {
+  if (!direct.type || !direct.partId) return
+  saving.value = true
+  try {
+    const { data } = await api.post('/skus', {
+      config: { root_type_id: direct.type.id, root_purchased_part_id: direct.partId },
+    })
+    if (data.created) {
+      ElMessage.success(`已创建整机直采 ${data.sku.sku_code}`)
+      if (auth.canSetPrice) await promptPrice(data.sku)
+      else ElMessage.info('SKU 已进入「待录价」，录价后方可加入报价单')
+    } else {
+      ElMessage.warning(`该整机已存在 SKU：${data.sku.sku_code}`)
+    }
+    router.push({ path: '/skus', query: { sku_id: data.sku.id } })
+  } catch { /* 拦截器提示 */ } finally {
+    saving.value = false
+  }
+}
+
 async function startFromSku(skuId: number, editing = false) {
   const { data } = await api.get(`/skus/${skuId}`)
+  if (data.config_tree?.mode === 'purchased') {
+    // 整机直采 SKU：进直采模式、预选其整机件（换件即生成新 SKU；不走逐项配置）
+    direct.active = true
+    direct.type = await loadType(data.root_type_id)
+    direct.partId = data.config_tree.purchased_part_id
+    direct.partLabel = `${data.config_tree.supplier_name} | ${data.config_tree.purchased_part_name}`
+    ElMessage.info(editing
+      ? `整机直采 ${data.sku_code}：换一个整机采购件即生成新 SKU`
+      : `已按整机直采 ${data.sku_code} 预填，换件即成新 SKU`)
+    return
+  }
   rootType.value = await loadType(data.root_type_id)
   await preloadTypes(data.config_tree)
   rootState.value = reactive(await fromSkuTree(data.config_tree))
@@ -483,7 +536,7 @@ const serverComplete = computed(() => result.value?.complete === true)
 
 <template>
   <!-- 起点：选品类 / 续草稿 -->
-  <div v-if="!rootState">
+  <div v-if="!rootState && !direct.active">
     <h3>开始一次配置</h3>
     <template v-for="group in [
       { label: '整机', items: rootTypes.filter((t: any) => t.kind === 'product') },
@@ -493,9 +546,14 @@ const serverComplete = computed(() => result.value?.complete === true)
         <el-divider content-position="left">{{ group.label }}</el-divider>
         <el-row :gutter="16">
           <el-col v-for="t in group.items" :key="t.id" :span="6" style="margin-bottom: 12px">
-            <el-card shadow="hover" style="cursor: pointer" @click="startNew(t)">
+            <el-card shadow="hover" :body-style="{ padding: '14px' }">
               <b>{{ t.name }}</b>
-              <div style="color: var(--el-text-color-secondary); font-size: 12px">{{ t.code }}</div>
+              <div style="color: var(--el-text-color-secondary); font-size: 12px; margin-bottom: 10px">{{ t.code }}</div>
+              <div v-if="group.label === '整机'" style="display: flex; gap: 6px">
+                <el-button size="small" type="primary" plain style="flex: 1" @click="startNew(t)">逐项配置</el-button>
+                <el-button size="small" style="flex: 1" @click="startDirect(t)">整机直采</el-button>
+              </div>
+              <el-button v-else size="small" type="primary" plain style="width: 100%" @click="startNew(t)">开始配置</el-button>
             </el-card>
           </el-col>
         </el-row>
@@ -513,6 +571,39 @@ const serverComplete = computed(() => result.value?.complete === true)
         </el-table-column>
       </el-table>
     </template>
+  </div>
+
+  <!-- 整机直采：整台外购成品直接成 SKU -->
+  <div v-else-if="direct.active">
+    <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px">
+      <el-button @click="cancelDirect">← 返回</el-button>
+      <h3 style="margin: 0">整机直采 · {{ direct.type?.name }}</h3>
+    </div>
+    <el-card style="max-width: 660px">
+      <el-alert
+        type="info" :closable="false" show-icon style="margin-bottom: 16px"
+        title="整机直采 = 整台外购成品直接作为可售 SKU，无需逐项配置；整机的描述规格随采购件灰盒带入，不入指纹/报价。"
+      />
+      <el-form label-width="110px">
+        <el-form-item label="整机采购件" required>
+          <template v-if="direct.partId">
+            <span>{{ direct.partLabel }}</span>
+            <el-button text type="primary" size="small" style="margin-left: 8px" @click="directPicker.visible = true">更换</el-button>
+          </template>
+          <el-button v-else type="primary" @click="directPicker.visible = true">选择整机采购件</el-button>
+        </el-form-item>
+      </el-form>
+      <div style="text-align: right; margin-top: 12px">
+        <el-button @click="cancelDirect">取消</el-button>
+        <el-button type="primary" :loading="saving" :disabled="!direct.partId" @click="createDirect">
+          创建整机直采 SKU
+        </el-button>
+      </div>
+    </el-card>
+    <PartPicker
+      v-model:visible="directPicker.visible" :node-type-id="direct.type?.id ?? 0"
+      :slot-name="`整机直采 · ${direct.type?.name ?? ''}`" @selected="onDirectPicked"
+    />
   </div>
 
   <!-- 三栏看板 -->

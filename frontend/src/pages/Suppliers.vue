@@ -24,8 +24,10 @@ const filtered = computed(() => {
 })
 
 async function loadSuppliers(keepSelId?: number) {
-  suppliers.value = (await api.get('/suppliers', { params: { include_inactive: true } })).data
-  if (keepSelId) selected.value = suppliers.value.find((s) => s.id === keepSelId) ?? null
+  // overview 带用量指标（采购项/整机供应/部件供应/关联成品），含已停用
+  suppliers.value = (await api.get('/suppliers/overview')).data
+  const wantId = keepSelId ?? selected.value?.id
+  if (wantId) selected.value = suppliers.value.find((s) => s.id === wantId) ?? null
   if (!selected.value && suppliers.value.length) selected.value = suppliers.value[0]
 }
 
@@ -140,16 +142,21 @@ async function submitCreate() {
           <template #prefix><el-icon><Search /></el-icon></template>
         </el-input>
         <div
-          v-for="s in filtered" :key="s.id" class="sup-item"
+          v-for="s in filtered" :key="s.id" class="sup-card"
           :class="{ active: selected?.id === s.id, inactive: !s.is_active }"
           @click="selectSupplier(s)"
         >
-          <div class="sup-name">
-            {{ s.name }}
+          <div class="sc-top">
+            <span class="sc-name">{{ s.name }}</span>
             <el-tag v-if="!s.is_active" size="small" type="info">已停用</el-tag>
-            <el-rate v-if="s.rating" :model-value="s.rating" disabled size="small" style="height: 16px" />
+            <el-rate v-if="s.rating" :model-value="s.rating" disabled size="small" class="sc-rate" />
           </div>
-          <div class="sup-meta">{{ s.code }}<span v-if="s.lead_time_days"> · 默认交期 {{ s.lead_time_days }}天</span></div>
+          <div class="sc-metrics">
+            <div class="m"><b>{{ s.procurement_items }}</b><span>采购</span></div>
+            <div class="m"><b>{{ s.assembly_count }}</b><span>整机</span></div>
+            <div class="m"><b>{{ s.component_count }}</b><span>部件</span></div>
+            <div class="m"><b>{{ s.linked_skus }}</b><span>关联</span></div>
+          </div>
         </div>
         <el-empty v-if="!filtered.length" :image-size="50" description="无供应商" />
       </el-card>
@@ -174,6 +181,14 @@ async function submitCreate() {
             </span>
           </div>
         </template>
+
+        <!-- 看板指标卡 -->
+        <div class="dash">
+          <div class="dash-card c1"><div class="dash-num">{{ selected.procurement_items }}</div><div class="dash-label">采购项</div></div>
+          <div class="dash-card c2"><div class="dash-num">{{ selected.assembly_count }}</div><div class="dash-label">整机供应</div></div>
+          <div class="dash-card c3"><div class="dash-num">{{ selected.component_count }}</div><div class="dash-label">部件供应</div></div>
+          <div class="dash-card c4"><div class="dash-num">{{ selected.linked_skus }}</div><div class="dash-label">关联成品（在售SKU）</div></div>
+        </div>
 
         <el-tabs v-model="tab">
           <el-tab-pane label="概览" name="overview">
@@ -248,10 +263,26 @@ async function submitCreate() {
 </template>
 
 <style scoped>
-.sup-item { padding: 8px 10px; border-radius: 6px; cursor: pointer; margin-bottom: 2px; }
-.sup-item:hover { background: var(--el-fill-color-light); }
-.sup-item.active { background: var(--el-color-primary-light-9); }
-.sup-item.inactive { opacity: 0.55; }
-.sup-name { font-size: 14px; display: flex; align-items: center; gap: 6px; }
-.sup-meta { font-size: 12px; color: var(--el-text-color-secondary); margin-top: 2px; }
+/* 左侧供应商卡片（带用量指标） */
+.sup-card { padding: 10px 10px 8px; border-radius: 8px; cursor: pointer; margin-bottom: 6px; border: 1px solid var(--el-border-color-lighter); transition: all .15s; }
+.sup-card:hover { border-color: var(--el-color-primary-light-5); background: var(--el-fill-color-light); }
+.sup-card.active { border-color: var(--el-color-primary); background: var(--el-color-primary-light-9); }
+.sup-card.inactive { opacity: 0.55; }
+.sc-top { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+.sc-name { font-size: 14px; font-weight: 600; }
+.sc-rate { height: 14px; }
+.sc-metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
+.sc-metrics .m { text-align: center; background: var(--el-fill-color); border-radius: 5px; padding: 4px 2px; }
+.sc-metrics .m b { display: block; font-size: 15px; font-weight: 700; color: var(--el-color-primary); line-height: 1.2; }
+.sc-metrics .m span { font-size: 10px; color: var(--el-text-color-secondary); white-space: nowrap; }
+
+/* 右侧看板指标卡 */
+.dash { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
+.dash-card { border-radius: 10px; padding: 16px; color: #fff; }
+.dash-card.c1 { background: linear-gradient(135deg, #409eff, #66b1ff); }
+.dash-card.c2 { background: linear-gradient(135deg, #67c23a, #85ce61); }
+.dash-card.c3 { background: linear-gradient(135deg, #e6a23c, #ebb563); }
+.dash-card.c4 { background: linear-gradient(135deg, #909399, #a6a9ad); }
+.dash-num { font-size: 28px; font-weight: 700; line-height: 1.2; }
+.dash-label { font-size: 13px; opacity: 0.92; margin-top: 4px; }
 </style>

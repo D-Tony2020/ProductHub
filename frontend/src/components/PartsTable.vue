@@ -8,8 +8,26 @@ import { useRouter } from 'vue-router'
 
 import { api } from '../api/client'
 import { useAuthStore } from '../stores/auth'
+import PartDetailDrawer from './PartDetailDrawer.vue'
 
 const router = useRouter()
+
+// 采购件详情抽屉
+const detail = reactive({ visible: false, partId: null as number | null, editOnLoad: false })
+function openDetail(row: any) {
+  detail.partId = row.id
+  detail.editOnLoad = false
+  detail.visible = true
+}
+function openEdit(row: any) {
+  detail.partId = row.id
+  detail.editOnLoad = true
+  detail.visible = true
+}
+function onDetailChanged() {
+  void load()
+  emit('changed')
+}
 
 const props = defineProps<{ supplierId?: number | null; supplierDefaultLead?: number | null }>()
 const emit = defineEmits<{ (e: 'changed'): void }>()
@@ -20,6 +38,10 @@ const nodeTypes = ref<any[]>([])
 const filters = reactive({ q: '', node_type_id: null as number | null, status: null as string | null })
 const loading = ref(false)
 const scoped = computed(() => props.supplierId != null)
+// 采购件可为部件(part)或整机(product)：两类分别供筛选/新建下拉与列表标签
+const partTypes = computed(() => nodeTypes.value.filter((t) => t.kind === 'part'))
+const assemblyTypes = computed(() => nodeTypes.value.filter((t) => t.kind === 'product'))
+const kindOf = (id: number) => nodeTypes.value.find((t) => t.id === id)?.kind
 
 async function load() {
   loading.value = true
@@ -39,7 +61,7 @@ async function load() {
 
 onMounted(async () => {
   try {
-    nodeTypes.value = (await api.get('/template/node-types')).data.filter((t: any) => t.kind === 'part')
+    nodeTypes.value = (await api.get('/template/node-types')).data
     await load()
   } catch { /* 401 由拦截器跳转登录 */ }
 })
@@ -72,26 +94,59 @@ async function merge(row: any) {
   await load(); emit('changed')
 }
 
-// 在当前供应商下新建采购件
+// 在当前供应商下新建采购件（部件 / 整机 两类，整机即"整机直采"可作SKU根）
 const createDialog = reactive({
   visible: false,
-  form: { name: '', node_type_id: null as number | null, lead_time_days: null as number | null },
+  form: {
+    kind: 'part' as 'part' | 'product',
+    name: '', node_type_id: null as number | null,
+    lead_time_days: null as number | null, spec_note: '',
+  },
 })
+const similarItems = ref<any[]>([])
+const createTypeOptions = computed(() =>
+  createDialog.form.kind === 'product' ? assemblyTypes.value : partTypes.value)
+
 function openCreate() {
-  createDialog.form = { name: '', node_type_id: null, lead_time_days: props.supplierDefaultLead ?? null }
+  createDialog.form = {
+    kind: 'part', name: '', node_type_id: null,
+    lead_time_days: props.supplierDefaultLead ?? null, spec_note: '',
+  }
+  similarItems.value = []
   createDialog.visible = true
 }
+function onKindChange() {
+  createDialog.form.node_type_id = null  // 切换大类清空已选类型
+  similarItems.value = []
+}
+
+let similarTimer: ReturnType<typeof setTimeout> | null = null
+function scheduleSimilar() {
+  if (similarTimer) clearTimeout(similarTimer)
+  similarTimer = setTimeout(checkSimilar, 350)
+}
+async function checkSimilar() {
+  const { node_type_id, name } = createDialog.form
+  if (!node_type_id || !name.trim()) { similarItems.value = []; return }
+  try {
+    similarItems.value = (await api.get('/purchased-parts/similar', {
+      params: { node_type_id, name: name.trim() },
+    })).data
+  } catch { similarItems.value = [] }
+}
+
 async function submitCreate() {
-  if (!createDialog.form.name || !createDialog.form.node_type_id) {
-    ElMessage.warning('请填写件名并选择部件类型')
+  if (!createDialog.form.name.trim() || !createDialog.form.node_type_id) {
+    ElMessage.warning('请填写件名并选择类型')
     return
   }
   try {
     await api.post('/purchased-parts', {
       node_type_id: createDialog.form.node_type_id,
       supplier_id: props.supplierId,
-      name: createDialog.form.name,
+      name: createDialog.form.name.trim(),
       lead_time_days: createDialog.form.lead_time_days,
+      spec_note: createDialog.form.spec_note || null,
     })
     createDialog.visible = false
     ElMessage.success('已新建')
@@ -110,8 +165,13 @@ const statusMap: Record<string, { label: string; type: string }> = {
 <template>
   <div>
     <div style="display: flex; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; align-items: center">
-      <el-select v-model="filters.node_type_id" placeholder="部件类型" clearable style="width: 160px">
-        <el-option v-for="t in nodeTypes" :key="t.id" :value="t.id" :label="t.name" />
+      <el-select v-model="filters.node_type_id" placeholder="类型" clearable style="width: 170px">
+        <el-option-group label="整机">
+          <el-option v-for="t in assemblyTypes" :key="t.id" :value="t.id" :label="t.name" />
+        </el-option-group>
+        <el-option-group label="部件">
+          <el-option v-for="t in partTypes" :key="t.id" :value="t.id" :label="t.name" />
+        </el-option-group>
       </el-select>
       <el-select v-model="filters.status" placeholder="状态" clearable style="width: 130px">
         <el-option value="draft" label="草稿（待审核）" />
@@ -128,10 +188,25 @@ const statusMap: Record<string, { label: string; type: string }> = {
       </el-button>
     </div>
     <el-table :data="rows" v-loading="loading">
-      <el-table-column prop="code" label="件号" width="120" />
-      <el-table-column prop="name" label="件名" min-width="170" />
+      <el-table-column prop="code" label="件号" width="130">
+        <template #default="{ row }">
+          <el-button text type="primary" class="cell-link" @click="openDetail(row)">{{ row.code }}</el-button>
+        </template>
+      </el-table-column>
+      <el-table-column prop="name" label="件名" min-width="170">
+        <template #default="{ row }">
+          <el-button text type="primary" class="cell-link" @click="openDetail(row)">{{ row.name }}</el-button>
+        </template>
+      </el-table-column>
       <el-table-column v-if="!scoped" prop="supplier_name" label="供应商" width="130" />
-      <el-table-column prop="node_type_name" label="部件类型" width="100" />
+      <el-table-column label="类型" width="120">
+        <template #default="{ row }">
+          <el-tag size="small" effect="plain" :type="kindOf(row.node_type_id) === 'product' ? 'warning' : 'info'">
+            {{ kindOf(row.node_type_id) === 'product' ? '整机' : '部件' }}
+          </el-tag>
+          <span style="margin-left: 4px">{{ row.node_type_name }}</span>
+        </template>
+      </el-table-column>
       <el-table-column label="参考交期" width="90">
         <template #default="{ row }">{{ row.lead_time_days != null ? `${row.lead_time_days} 天` : '—' }}</template>
       </el-table-column>
@@ -154,11 +229,15 @@ const statusMap: Record<string, { label: string; type: string }> = {
           >{{ row.spec_config || row.spec_note ? '规格✓ 编辑' : '+ 规格' }}</el-button>
         </template>
       </el-table-column>
-      <el-table-column v-if="auth.isAdmin" label="操作" width="190">
+      <el-table-column label="操作" :width="auth.isAdmin ? 290 : 80">
         <template #default="{ row }">
-          <el-button v-if="row.status === 'draft'" size="small" type="success" @click="approve(row)">转正</el-button>
-          <el-button v-if="['draft', 'active'].includes(row.status)" size="small" @click="merge(row)">合并</el-button>
-          <el-button v-if="['draft', 'active'].includes(row.status)" size="small" type="danger" plain @click="retire(row)">停用</el-button>
+          <el-button size="small" @click="openDetail(row)">详情</el-button>
+          <template v-if="auth.isAdmin">
+            <el-button v-if="['draft', 'active'].includes(row.status)" size="small" type="primary" plain @click="openEdit(row)">编辑</el-button>
+            <el-button v-if="row.status === 'draft'" size="small" type="success" @click="approve(row)">转正</el-button>
+            <el-button v-if="['draft', 'active'].includes(row.status)" size="small" @click="merge(row)">合并</el-button>
+            <el-button v-if="['draft', 'active'].includes(row.status)" size="small" type="danger" plain @click="retire(row)">停用</el-button>
+          </template>
         </template>
       </el-table-column>
     </el-table>
@@ -166,25 +245,68 @@ const statusMap: Record<string, { label: string; type: string }> = {
       业务员在配置看板现场新建的件为「草稿」，可直接用于配置；管理员在此审核转正、合并重复或停用。
     </p>
 
-    <el-dialog v-model="createDialog.visible" title="新建成品采购件" width="460">
+    <el-dialog v-model="createDialog.visible" title="新建采购件" width="520">
       <el-form label-width="90px">
-        <el-form-item label="件名" required>
-          <el-input v-model="createDialog.form.name" placeholder="如 华消K2阀门（件号自动生成）" />
+        <el-form-item label="采购大类">
+          <el-radio-group v-model="createDialog.form.kind" @change="onKindChange">
+            <el-radio-button value="part">部件采购件</el-radio-button>
+            <el-radio-button value="product">整机采购件</el-radio-button>
+          </el-radio-group>
         </el-form-item>
-        <el-form-item label="部件类型" required>
-          <el-select v-model="createDialog.form.node_type_id" filterable style="width: 100%" placeholder="选择部件类型">
-            <el-option v-for="t in nodeTypes" :key="t.id" :value="t.id" :label="t.name" />
+        <el-form-item :label="createDialog.form.kind === 'product' ? '整机品类' : '部件类型'" required>
+          <el-select
+            v-model="createDialog.form.node_type_id" filterable style="width: 100%"
+            :placeholder="createDialog.form.kind === 'product' ? '选择整机品类（取自产品模板）' : '选择部件类型'"
+            @change="scheduleSimilar"
+          >
+            <el-option v-for="t in createTypeOptions" :key="t.id" :value="t.id" :label="t.name" />
           </el-select>
         </el-form-item>
+        <el-form-item label="件名" required>
+          <el-input
+            v-model="createDialog.form.name" @input="scheduleSimilar"
+            :placeholder="createDialog.form.kind === 'product' ? '如 华消2kg干粉整机（件号自动生成）' : '如 华消K2阀门（件号自动生成）'"
+          />
+        </el-form-item>
+        <el-alert
+          v-if="similarItems.length" type="warning" :closable="false" show-icon style="margin: 0 0 12px 0"
+          :title="`已有 ${similarItems.length} 个相似件，请确认不是重复建档`"
+        >
+          <div style="font-size: 12px; line-height: 1.7">
+            <div v-for="s in similarItems.slice(0, 5)" :key="s.id">
+              <span style="font-family: monospace">{{ s.code }}</span> · {{ s.name }}
+              <span style="color: var(--el-text-color-secondary)">（{{ s.supplier_name }}）</span>
+            </div>
+          </div>
+        </el-alert>
         <el-form-item label="参考交期">
           <el-input-number v-model="createDialog.form.lead_time_days" :min="0" :max="3650" placeholder="天" /> 天
           <span style="margin-left: 8px; font-size: 12px; color: var(--el-text-color-secondary)">缺省取供应商默认交期</span>
         </el-form-item>
+        <el-form-item label="规格备注">
+          <el-input
+            v-model="createDialog.form.spec_note" type="textarea" :rows="2"
+            placeholder="选填：灰盒描述规格（仅描述，不入指纹/报价）；完整规格树可稍后在详情维护"
+          />
+        </el-form-item>
+        <p v-if="createDialog.form.kind === 'product'" style="margin: 0; font-size: 12px; color: var(--el-text-color-secondary)">
+          整机采购件 = 整台直接外购的成品，可在配置看板用「整机直采」一键生成可售 SKU。
+        </p>
       </el-form>
       <template #footer>
         <el-button @click="createDialog.visible = false">取消</el-button>
         <el-button type="primary" @click="submitCreate">创建</el-button>
       </template>
     </el-dialog>
+
+    <PartDetailDrawer
+      v-model="detail.visible" :part-id="detail.partId" :edit-on-load="detail.editOnLoad"
+      @changed="onDetailChanged"
+    />
   </div>
 </template>
+
+<style scoped>
+.cell-link { padding: 0; height: auto; font-weight: 500; }
+.cell-link :deep(span) { white-space: normal; text-align: left; }
+</style>

@@ -36,6 +36,15 @@ class SupplierOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class SupplierOverviewOut(SupplierOut):
+    """供应商 + 用量指标（采购侧关心：采购项/整机供应/部件供应/关联成品）。"""
+
+    procurement_items: int = 0   # 采购项数（在用成品采购件）
+    assembly_count: int = 0      # 整机供应（product 类型的件）
+    component_count: int = 0     # 部件供应（part 类型的件）
+    linked_skus: int = 0         # 关联在售 SKU（黑盒 ∪ 白盒来源，去重）
+
+
 class PurchasedPartIn(BaseModel):
     node_type_id: int
     supplier_id: int | None = None
@@ -57,6 +66,7 @@ class PurchasedPartOut(BaseModel):
     code: str
     node_type_id: int
     node_type_name: str = ""
+    node_type_kind: str = ""   # product=整机 / part=部件，供前端区分整机直采
     supplier_id: int
     supplier_name: str = ""
     name: str
@@ -76,6 +86,19 @@ class PartSpecUpdate(BaseModel):
 
     spec_note: str | None = None
     spec_config: dict | None = None
+
+
+class LinkedSku(BaseModel):
+    id: int
+    sku_code: str
+    name: str
+    status: str
+
+
+class PurchasedPartDetailOut(PurchasedPartOut):
+    """采购件详情页：在列表字段之上带关联在售 SKU 列表。"""
+
+    linked_skus: list[LinkedSku] = []
 
 
 class MergeIn(BaseModel):

@@ -45,6 +45,12 @@ def reconstruct_payload(sku: Sku) -> ConfigPayload:
         # 无根=数据异常；返回空配置让 validate 报缺（不应发生）
         return ConfigPayload(root_type_id=sku.root_type_id, root=ConfigNodeIn())
 
+    if root.mode == "purchased":
+        # 整机直采：根=黑盒整机件，还原成 root_purchased_part_id（重算指纹走 P: 路径）
+        return ConfigPayload(
+            root_type_id=root.node_type_id, root_purchased_part_id=root.purchased_part_id,
+        )
+
     def to_node_in(node: SkuConfigNode) -> ConfigNodeIn:
         attrs = [
             AttributeSelection(attribute_id=av.attribute_id, option_id=av.option_id)

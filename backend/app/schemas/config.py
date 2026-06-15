@@ -2,7 +2,7 @@
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class AttributeSelection(BaseModel):
@@ -26,7 +26,18 @@ class ConfigNodeIn(BaseModel):
 
 class ConfigPayload(BaseModel):
     root_type_id: int
-    root: ConfigNodeIn
+    # 逐项配置(白盒)路径：根节点的配置树。与 root_purchased_part_id 二选一。
+    root: ConfigNodeIn | None = None
+    # 整机直采(黑盒整机)路径：根节点直接 = 一个整机采购件(product+可售根)，无内部配置。
+    # 指纹根 token 用 P:{件号}（加法式，既有以 C: 开头的 SKU 逐字节零影响）；
+    # 整机的描述规格走采购件的灰盒 spec_config/spec_note，不入指纹/报价。
+    root_purchased_part_id: int | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one_root(self) -> "ConfigPayload":
+        if (self.root is None) == (self.root_purchased_part_id is None):
+            raise ValueError("root 与 root_purchased_part_id 必须且只能提供一个")
+        return self
 
 
 class ValidationIssue(BaseModel):

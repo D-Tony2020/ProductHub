@@ -288,6 +288,36 @@ def _walk(
     return f"C:{node_type.code}{{{attrs_str}|{children_str}{supplier_token}}}"
 
 
+def _walk_purchased_root(
+    db: Session, root_type: NodeType, part_id: int, state: _WalkState, lenient: bool = False,
+) -> str | None:
+    """整机直采：根节点 = 一个整机采购件(黑盒整机)，无内部配置。
+
+    序列化为加法式根 token "P:{件号}"——与配置根的 "C:" 前缀整串首字符即不同，
+    既有 SKU 指纹逐字节零影响；件号全局唯一且与供应商绑定(方案甲：换供应商=换件=换指纹)。
+    整机的描述规格在采购件灰盒(spec_config/spec_note)，不入指纹。
+    """
+    part = db.get(PurchasedPart, part_id) if part_id else None
+    if part is None:
+        state.error("ROOT", "整机采购件不存在")
+        return None
+    if part.node_type_id != root_type.id:
+        state.error("ROOT", f"整机件「{part.name}」的品类与根品类不匹配")
+        return None
+    if part.status not in ("draft", "active"):
+        if lenient:
+            skind = "part_merged" if part.status == "merged" else "part_retired"
+            verb = "已合并" if part.status == "merged" else "已停用"
+            state.supply("ROOT", f"整机件「{part.name}」{verb}", skind)
+            # 残货按已存件算指纹：不阻断
+        else:
+            state.error("ROOT", f"整机件「{part.name}」已合并或停用，不可用于新配置",
+                        family="supply")
+            return None
+    state.summary_parts.append(part.name)
+    return f"P:{part.code}"
+
+
 def _current_prices(db: Session, sku_id: int) -> list[CurrentPrice]:
     today = date.today()
     rows = db.execute(
@@ -335,7 +365,11 @@ def validate_config(
         state.error("ROOT", f"「{root_type.name}」不可作为可售品类的根")
         return ValidateResult(complete=False, issues=state.issues), None
 
-    serial = _walk(db, root_type, payload.root, "ROOT", 1, state, lenient, type_cache)
+    if payload.root_purchased_part_id is not None:
+        # 整机直采：根=黑盒整机件
+        serial = _walk_purchased_root(db, root_type, payload.root_purchased_part_id, state, lenient)
+    else:
+        serial = _walk(db, root_type, payload.root, "ROOT", 1, state, lenient, type_cache)
     if serial is None:
         return ValidateResult(complete=False, issues=state.issues), None
 
@@ -431,7 +465,16 @@ def create_sku(
         with db.begin_nested():
             with db.no_autoflush:
                 db.add(sku)
-                _build_nodes(db, sku, payload.root_type_id, payload.root, None, None)
+                if payload.root_purchased_part_id is not None:
+                    # 整机直采：单个 purchased 根节点（parent/slot 均空，供应商由件决定）
+                    db.add(SkuConfigNode(
+                        sku=sku, parent=None, slot_id=None,
+                        node_type_id=payload.root_type_id,
+                        mode="purchased", purchased_part_id=payload.root_purchased_part_id,
+                        supplier_id=None,
+                    ))
+                else:
+                    _build_nodes(db, sku, payload.root_type_id, payload.root, None, None)
             db.flush()
     except IntegrityError:
         # 并发撞车：丢弃本会话待插入的对象（否则后续查询 autoflush 会再次 INSERT），

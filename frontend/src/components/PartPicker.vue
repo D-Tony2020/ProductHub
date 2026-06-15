@@ -41,7 +41,7 @@ watch(() => props.visible, (v) => {
     search.value = ''
     void load()
   }
-})
+}, { immediate: true })  // immediate：整机直采时 picker 挂载即 visible=true，无变化事件，须立即加载
 watch(search, () => void load())
 
 onMounted(async () => {
