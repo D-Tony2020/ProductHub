@@ -119,3 +119,11 @@ const statusLabel: Record<string, string> = {
     </el-col>
   </el-row>
 </template>
+
+<style scoped>
+/* 拖拽悬停时品牌高亮（hover 边框已由令牌变工业蓝，此处补浅底反馈） */
+:deep(.el-upload-dragger.is-dragover) {
+  background: var(--el-color-primary-light-9);
+  border-color: var(--ph-brand-600);
+}
+</style>

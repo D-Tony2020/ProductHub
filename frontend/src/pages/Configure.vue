@@ -826,6 +826,7 @@ const serverComplete = computed(() => result.value?.complete === true)
           </div>
         </template>
 
+        <div class="cfg-actions">
         <template v-if="serverComplete">
           <el-divider />
           <!-- 修改既有 SKU：统一走"保存修改"(update)；命中既有指纹由后端处理 -->
@@ -876,6 +877,7 @@ const serverComplete = computed(() => result.value?.complete === true)
         <div v-if="validating" style="margin-top: 8px; color: var(--el-text-color-secondary); font-size: 12px">
           校验中…
         </div>
+        </div>
         </template>
       </el-card>
     </el-col>
@@ -898,5 +900,12 @@ const serverComplete = computed(() => result.value?.complete === true)
   border-left: 3px solid var(--ph-brand-600);
   padding-left: 8px;
   margin: 18px 0 10px;
+}
+/* 终局动作区 sticky：长配置表单滚动时主操作常驻底部 */
+.cfg-actions {
+  position: sticky;
+  bottom: 0;
+  background: var(--el-bg-color);
+  padding-bottom: 4px;
 }
 </style>
