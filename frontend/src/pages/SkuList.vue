@@ -7,6 +7,8 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { api } from '../api/client'
+import BomTreeNode from '../components/BomTreeNode.vue'
+import PriceTrendChart from '../components/PriceTrendChart.vue'
 import StatCard from '../components/StatCard.vue'
 import { useAuthStore } from '../stores/auth'
 import { useQuoteCartStore } from '../stores/quoteCart'
@@ -51,6 +53,7 @@ function healthTag(s: any): { type: 'danger' | 'warning'; text: string } | null 
 
 /** 加入报价单禁用原因（null=可加入）。完整性优先于待录价，黄色 supply 不拦。 */
 function addDisabledReason(s: any): string | null {
+  if (!s) return null
   if (s.status !== 'active') return '已作废 SKU 不可报价'
   if (s.health_status === 'incomplete') return '配置不完整（缺必选项/必配部件或违反互斥组），需先治理后才能报价'
   if (!s.current_prices?.length) return '待录价，录入现价后才能加入报价单'
@@ -58,6 +61,7 @@ function addDisabledReason(s: any): string | null {
 }
 
 const drawer = reactive({ visible: false, sku: null as any, prices: [] as any[] })
+const bomCollapsed = reactive(new Set<string>())  // 产品构成树折叠态（节点路径）
 
 async function loadStats() {
   try {
@@ -144,8 +148,77 @@ async function openDetailById(id: number) {
   const { data } = await api.get(`/skus/${id}`)
   drawer.sku = data
   drawer.prices = (await api.get(`/skus/${id}/prices`)).data
+  bomCollapsed.clear()  // 每次打开默认全展开
   drawer.visible = true
 }
+
+// ---- SKU 详情页（重设计）派生与工具 ----
+const isDirectAssembly = computed(() => drawer.sku?.config_tree?.mode === 'purchased')
+
+function priceVal(s: any) { return s?.current_prices?.[0]?.price ?? null }
+function priceCur(s: any) { return s?.current_prices?.[0]?.currency ?? '' }
+
+/** 「可否报价」结论：复用 addDisabledReason 同一判定，杜绝与按钮禁用态打架。 */
+const quotableVerdict = computed<{ label: string; tone: any; alert: boolean }>(() => {
+  const s = drawer.sku
+  if (!s) return { label: '', tone: 'default', alert: false }
+  const reason = addDisabledReason(s)
+  if (reason) {
+    if (s.status !== 'active') return { label: '已作废', tone: 'info', alert: false }
+    if (s.health_status === 'incomplete') return { label: '不可报价', tone: 'danger', alert: true }
+    return { label: '待录价', tone: 'warning', alert: true }
+  }
+  if (s.health_status === 'supply_warn') return { label: '可报价 · 有风险', tone: 'warning', alert: true }
+  return { label: '可报价', tone: 'success', alert: false }
+})
+
+function countBom(node: any, acc: { total: number; white: number; black: number }) {
+  acc.total++
+  if (node.mode === 'purchased') acc.black++; else acc.white++
+  for (const c of node.children ?? []) countBom(c, acc)
+  return acc
+}
+const bomStats = computed(() =>
+  drawer.sku?.config_tree
+    ? countBom(drawer.sku.config_tree, { total: 0, white: 0, black: 0 })
+    : { total: 0, white: 0, black: 0 })
+
+const sourcingGrouped = computed(() => {
+  if (!drawer.sku?.config_tree) return { none: [] as any[], black: [] as any[], white: [] as any[] }
+  const rows = sourcingRows(drawer.sku.config_tree)
+  return {
+    none: rows.filter((r) => !r.supplier),
+    black: rows.filter((r) => r.supplier && r.black),
+    white: rows.filter((r) => r.supplier && !r.black),
+  }
+})
+
+function collectBomParents(node: any, path: string, acc: string[]) {
+  if (node.children && node.children.length) {
+    acc.push(path)
+    node.children.forEach((c: any, i: number) => collectBomParents(c, `${path}-${i}`, acc))
+  }
+  return acc
+}
+function expandAllBom() { bomCollapsed.clear() }
+function collapseAllBom() {
+  bomCollapsed.clear()
+  if (drawer.sku?.config_tree) collectBomParents(drawer.sku.config_tree, '0', []).forEach((p) => bomCollapsed.add(p))
+}
+async function copyBomText() {
+  if (!drawer.sku?.config_tree) return
+  try {
+    await navigator.clipboard.writeText(renderTreeText(drawer.sku.config_tree).join('\n'))
+    ElMessage.success('已复制构成文本')
+  } catch { ElMessage.warning('复制失败，请手动选择') }
+}
+async function copyCode() {
+  if (!drawer.sku?.sku_code) return
+  try { await navigator.clipboard.writeText(drawer.sku.sku_code); ElMessage.success('已复制 SKU 编码') } catch { /* 忽略 */ }
+}
+function goSku(id?: number) { if (id) openDetailById(id) }
+const bomSection = ref<HTMLElement | null>(null)
+function scrollToBom() { bomSection.value?.scrollIntoView({ behavior: 'smooth', block: 'start' }) }
 
 async function addToQuote(sku: any) {
   const r = await cart.addSku(sku.id, 1)
@@ -522,89 +595,138 @@ function priceRange(t: any): string | null {
     </p>
   </template>
 
-  <el-drawer v-model="drawer.visible" size="50%" :title="drawer.sku?.sku_code">
-    <template v-if="drawer.sku">
-      <h3 style="margin-top: 0">{{ drawer.sku.name }}</h3>
-      <p>
-        <el-tag :type="drawer.sku.status === 'active' ? 'success' : 'info'">
+  <el-drawer v-model="drawer.visible" size="560px" direction="rtl" class="sku-drawer">
+    <template #header>
+      <div class="sku-dh">
+        <span class="dh-code">{{ drawer.sku?.sku_code }}
+          <el-icon class="copy-code" @click="copyCode"><CopyDocument /></el-icon>
+        </span>
+        <el-tag v-if="drawer.sku" size="small" :type="drawer.sku.status === 'active' ? 'success' : 'info'">
           {{ drawer.sku.status === 'active' ? '在售' : '已作废' }}
         </el-tag>
-        <span v-if="priceText(drawer.sku)" class="ph-num" style="font-size: 24px; margin-left: 12px; color: var(--el-color-success)">
-          {{ priceText(drawer.sku) }}
-        </span>
-        <el-tag v-else type="warning" style="margin-left: 12px">待录价</el-tag>
-        <el-tag v-if="drawer.sku.superseded_by_sku_code" type="info" effect="plain" style="margin-left: 8px">
-          已被 {{ drawer.sku.superseded_by_sku_code }} 取代
-        </el-tag>
-      </p>
-      <el-alert
-        v-if="drawer.sku.health && drawer.sku.health.status !== 'ok'"
-        :type="drawer.sku.health.blocking ? 'error' : 'warning'"
-        :closable="false" show-icon style="margin-bottom: 12px"
-      >
-        <template #title>
-          {{ drawer.sku.health.blocking
-            ? '配置不完整：不可加入报价单，需先治理'
-            : '含停用 / 停产件：可报价，但请留意供货风险' }}
-        </template>
-        <ul class="health-issues">
-          <li v-for="(it, i) in [
-            ...drawer.sku.health.families.completeness,
-            ...drawer.sku.health.families.structural,
-            ...drawer.sku.health.families.supply,
-          ]" :key="i">{{ it.message }}</li>
-        </ul>
-      </el-alert>
-      <el-tabs>
-        <el-tab-pane label="产品构成（事实视图）">
-          <pre style="font-family: inherit; line-height: 1.9; white-space: pre-wrap">{{
-            drawer.sku.config_tree ? renderTreeText(drawer.sku.config_tree).join('\n') : '—'
-          }}</pre>
-        </el-tab-pane>
-        <el-tab-pane label="来源地图">
-          <div v-if="drawer.sku.config_tree" class="sourcing-map">
-            <div v-for="(r, i) in sourcingRows(drawer.sku.config_tree)" :key="i" class="src-row">
+      </div>
+    </template>
+
+    <template v-if="drawer.sku">
+      <!-- 决策层（sticky 钉顶）：3 秒看懂 是什么货 / 多少钱 / 能不能卖 -->
+      <div class="decide">
+        <div class="decide-name">
+          {{ drawer.sku.name }}
+          <el-tag size="small" effect="plain" :type="isDirectAssembly ? 'warning' : 'info'">
+            {{ isDirectAssembly ? '整机直采' : '白盒配置' }}
+          </el-tag>
+          <el-tag
+            v-if="drawer.sku.superseded_by_sku_code" size="small" type="info" effect="plain"
+            class="link-tag" @click="goSku(drawer.sku.superseded_by_sku_id)"
+          >已被 {{ drawer.sku.superseded_by_sku_code }} 取代</el-tag>
+        </div>
+        <div class="decide-kpis">
+          <StatCard
+            label="现价" :tone="priceVal(drawer.sku) ? 'success' : 'warning'" :alert="!priceVal(drawer.sku)"
+            :value="priceVal(drawer.sku) ?? '待录价'" :unit="priceVal(drawer.sku) ? priceCur(drawer.sku) : ''"
+          />
+          <StatCard label="可否报价" :tone="quotableVerdict.tone" :alert="quotableVerdict.alert" :value="quotableVerdict.label" />
+          <StatCard
+            label="构成" clickable @click="scrollToBom"
+            :value="isDirectAssembly ? '整机' : bomStats.total" :unit="isDirectAssembly ? '' : '项'"
+            :hint="isDirectAssembly ? '' : `白盒${bomStats.white}·黑盒${bomStats.black}`"
+          />
+        </div>
+        <el-alert
+          v-if="drawer.sku.health && drawer.sku.health.status !== 'ok'"
+          :type="drawer.sku.health.blocking ? 'error' : 'warning'"
+          :closable="false" show-icon style="margin-top: 12px"
+        >
+          <template #title>
+            {{ drawer.sku.health.blocking
+              ? '配置不完整：不可加入报价单，需先治理'
+              : '含停用 / 停产件：可报价，但请留意供货风险' }}
+          </template>
+          <ul class="health-issues">
+            <li v-for="(it, i) in [
+              ...drawer.sku.health.families.completeness,
+              ...drawer.sku.health.families.structural,
+              ...drawer.sku.health.families.supply,
+            ]" :key="i">{{ it.message }}</li>
+          </ul>
+        </el-alert>
+      </div>
+
+      <!-- 区① 产品构成 · BOM 事实视图 -->
+      <div ref="bomSection" class="pd-section">
+        <div class="pd-section-head">
+          <span>产品构成</span>
+          <span class="sec-tools">
+            <el-button text size="small" @click="expandAllBom">展开全部</el-button>
+            <el-button text size="small" @click="collapseAllBom">收起全部</el-button>
+            <el-button text size="small" :icon="CopyDocument" @click="copyBomText">复制构成</el-button>
+          </span>
+        </div>
+        <div class="bom-box">
+          <BomTreeNode v-if="drawer.sku.config_tree" :node="drawer.sku.config_tree" path="0" :collapsed="bomCollapsed" />
+          <span v-else style="color: var(--el-text-color-secondary); font-size: 13px">—</span>
+        </div>
+      </div>
+
+      <!-- 区② 来源地图 -->
+      <div class="pd-section">
+        <div class="pd-section-head"><span>来源地图</span></div>
+        <div class="src-box">
+          <template v-if="sourcingGrouped.none.length">
+            <div class="src-grp danger">未标注来源</div>
+            <div v-for="(r, i) in sourcingGrouped.none" :key="'n' + i" class="src-line">
               <span class="src-label">{{ r.label }}</span>
-              <span v-if="r.supplier" class="src-sup">
-                <el-tag size="small" :type="r.black ? 'info' : 'primary'" effect="plain">
-                  {{ r.black ? '成品件' : '标注' }}
-                </el-tag>
-                <el-icon style="vertical-align: -2px; margin: 0 4px"><Right /></el-icon>{{ r.supplier }}
-              </span>
-              <span v-else class="src-none">
-                <el-icon style="vertical-align: -2px; margin-right: 2px"><WarningFilled /></el-icon>未标注来源
-              </span>
+              <span class="src-warn"><el-icon><WarningFilled /></el-icon> 未标注来源</span>
             </div>
-          </div>
-          <p style="color: var(--el-text-color-secondary); font-size: 12px; margin-top: 8px">
-            黑盒成品件来源由其供应商派生；白盒配置件来源为节点级标注（已入指纹，改来源生成新 SKU）。
-          </p>
-        </el-tab-pane>
-        <el-tab-pane label="价格历史">
-          <el-table :data="drawer.prices"
-                    :row-class-name="({ row }: { row: any }) => (row.superseded ? 'price-superseded' : '')">
-            <el-table-column label="状态" width="80">
-              <template #default="{ row }">
-                <el-tag v-if="row.superseded" size="small" type="info">已作废</el-tag>
-                <el-tag v-else-if="!row.valid_to" size="small" type="success">生效</el-tag>
-                <el-tag v-else size="small">历史</el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column prop="price" label="单价" width="100" />
-            <el-table-column prop="currency" label="币种" width="64" />
-            <el-table-column prop="valid_from" label="生效日" width="106" />
-            <el-table-column prop="valid_to" label="失效日" width="106">
-              <template #default="{ row }">{{ row.valid_to ?? '长期' }}</template>
-            </el-table-column>
-            <el-table-column prop="created_by_name" label="录入人" width="90" />
-            <el-table-column prop="note" label="备注" />
-          </el-table>
-          <p style="color: var(--el-text-color-secondary); font-size: 12px">
-            价格只追加不覆盖；同日纠错的旧价标"已作废"灰显、物理保留可追溯。
-          </p>
-        </el-tab-pane>
-      </el-tabs>
-      <div style="display: flex; gap: 8px; margin-top: 12px">
+          </template>
+          <template v-if="sourcingGrouped.black.length">
+            <div class="src-grp">黑盒成品件</div>
+            <div v-for="(r, i) in sourcingGrouped.black" :key="'b' + i" class="src-line">
+              <span class="src-label">{{ r.label }}</span>
+              <span><el-tag size="small" type="primary" effect="dark">成品</el-tag><el-icon class="src-arrow"><Right /></el-icon><span class="src-sup">{{ r.supplier }}</span></span>
+            </div>
+          </template>
+          <template v-if="sourcingGrouped.white.length">
+            <div class="src-grp">白盒标注</div>
+            <div v-for="(r, i) in sourcingGrouped.white" :key="'w' + i" class="src-line">
+              <span class="src-label">{{ r.label }}</span>
+              <span><el-tag size="small" type="info" effect="plain">标注</el-tag><el-icon class="src-arrow"><Right /></el-icon><span class="src-sup">{{ r.supplier }}</span></span>
+            </div>
+          </template>
+        </div>
+        <p class="sec-note">黑盒成品件来源由其供应商派生；白盒标注为节点级标注（已入指纹，改来源生成新 SKU）。</p>
+      </div>
+
+      <!-- 区③ 价格历史 + 趋势 -->
+      <div class="pd-section">
+        <div class="pd-section-head"><span>价格历史</span></div>
+        <PriceTrendChart :prices="drawer.prices" />
+        <el-table
+          :data="drawer.prices" size="small"
+          :row-class-name="({ row }: { row: any }) => (row.superseded ? 'price-superseded' : '')"
+        >
+          <el-table-column label="状态" width="72">
+            <template #default="{ row }">
+              <el-tag v-if="row.superseded" size="small" type="info">已作废</el-tag>
+              <el-tag v-else-if="!row.valid_to" size="small" type="success">生效</el-tag>
+              <el-tag v-else size="small">历史</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="price" label="单价" width="88" align="right" />
+          <el-table-column prop="currency" label="币种" width="56" />
+          <el-table-column prop="valid_from" label="生效日" width="100" />
+          <el-table-column prop="valid_to" label="失效日" width="100">
+            <template #default="{ row }">{{ row.valid_to ?? '长期' }}</template>
+          </el-table-column>
+          <el-table-column prop="created_by_name" label="录入人" width="80" />
+          <el-table-column prop="note" label="备注" min-width="80" />
+        </el-table>
+        <p class="sec-note">价格只追加不覆盖；同日纠错的旧价标"已作废"灰显、物理保留可追溯。</p>
+      </div>
+    </template>
+
+    <template #footer>
+      <div v-if="drawer.sku" class="sku-actions">
         <el-tooltip :disabled="!addDisabledReason(drawer.sku)" :content="addDisabledReason(drawer.sku) || ''" placement="top">
           <span>
             <el-button type="primary" :disabled="!!addDisabledReason(drawer.sku)"
@@ -612,7 +734,7 @@ function priceRange(t: any): string | null {
           </span>
         </el-tooltip>
         <el-button
-          v-if="drawer.sku.status === 'active' && !drawer.sku.superseded_by_sku_id"
+          v-if="drawer.sku?.status === 'active' && !drawer.sku?.superseded_by_sku_id"
           type="primary" plain :icon="EditPen"
           @click="router.push({ path: '/configure', query: { edit_sku_id: drawer.sku.id } })"
         >修改配置</el-button>
@@ -725,14 +847,43 @@ function priceRange(t: any): string | null {
 }
 :deep(.price-superseded) { opacity: 0.55; }
 .health-issues { margin: 4px 0 0; padding-left: 18px; font-size: 13px; line-height: 1.7; }
-.sourcing-map { display: flex; flex-direction: column; gap: 6px; }
-.src-row {
-  display: flex; align-items: center; justify-content: space-between;
-  background: var(--el-fill-color-lighter); border-radius: 6px; padding: 7px 11px;
+/* ===== SKU 详情抽屉（重设计）===== */
+.sku-dh { display: flex; align-items: center; gap: 10px; }
+.dh-code { font-family: var(--ph-font-mono); font-size: 13px; color: var(--el-text-color-secondary); font-variant-numeric: tabular-nums; }
+.copy-code { cursor: pointer; color: var(--ph-gray-400); vertical-align: -2px; }
+.copy-code:hover { color: var(--ph-brand-600); }
+
+.decide {
+  position: sticky; top: 0; z-index: 2; background: var(--el-bg-color);
+  border-bottom: 1px solid var(--el-border-color-light);
+  padding-bottom: 14px; margin-bottom: 14px;
 }
-.src-label { font-size: 13px; }
-.src-sup { font-size: 13px; color: var(--el-color-primary); }
-.src-none { font-size: 13px; color: var(--el-color-danger); }
+.decide-name { font-size: 16px; font-weight: 600; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.link-tag { cursor: pointer; }
+.decide-kpis { display: flex; gap: 10px; }
+.decide-kpis > * { flex: 1; }
+
+.pd-section { margin-bottom: 18px; }
+.pd-section-head {
+  display: flex; align-items: center; justify-content: space-between;
+  font-weight: 600; font-size: 14px; margin-bottom: 10px;
+  padding-bottom: 6px; border-bottom: 1px solid var(--el-border-color-lighter);
+}
+.sec-tools { font-weight: 400; }
+.sec-note { color: var(--el-text-color-secondary); font-size: 12px; margin: 8px 0 0; }
+
+.bom-box { background: var(--el-fill-color-light); border-radius: var(--ph-radius-md); padding: 10px 12px; }
+
+.src-box { background: var(--el-fill-color-light); border-radius: var(--ph-radius-md); padding: 8px 12px; }
+.src-grp { font-size: 12px; color: var(--el-text-color-secondary); margin: 6px 0 2px; }
+.src-grp.danger { color: var(--el-color-danger); }
+.src-line { display: flex; align-items: center; justify-content: space-between; font-size: 13px; padding: 3px 0; }
+.src-label { color: var(--el-text-color-primary); }
+.src-sup { color: var(--ph-brand-600); }
+.src-arrow { margin: 0 4px; color: var(--ph-gray-400); vertical-align: -2px; }
+.src-warn { color: var(--el-color-danger); font-size: 12px; }
+
+.sku-actions { display: flex; gap: 8px; }
 
 /* 产品库视图切换 + 产品全貌 */
 .home-toggle { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
