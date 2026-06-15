@@ -19,9 +19,12 @@ const navTrail = ref<{ id: number; name: string }[]>([])
 const typeDialog = reactive({ visible: false, form: { name: '', kind: 'part', is_sellable_root: false } })
 const attrDialog = reactive({ visible: false, form: { name: '', is_required: true, is_filterable: false } })
 const optDialog = reactive({ visible: false, attrId: 0, form: { label: '' } })
+type VariantMode = 'none' | 'existing' | 'new'
 const slotDialog = reactive({
   visible: false,
-  source: 'existing' as 'existing' | 'new',   // 部件类型来源：选已有 / 现场新建
+  source: 'existing' as 'existing' | 'new',   // 起点二分叉：用现存部件 / 新建部件
+  variantMode: 'none' as VariantMode,         // N选1 三态：普通 / 加入已有组 / 新建组
+  suffix: '',                                 // 选已有时·同父重复挂同类型才解锁的区分后缀
   form: {
     name: '', child_type_id: null as number | null,
     is_required: true, allow_blackbox: true, variant_group: '',
@@ -30,9 +33,43 @@ const slotDialog = reactive({
 
 function openSlotDialog() {
   slotDialog.source = 'existing'
+  slotDialog.variantMode = 'none'
+  slotDialog.suffix = ''
   slotDialog.form = { name: '', child_type_id: null, is_required: true, allow_blackbox: true, variant_group: '' }
   slotDialog.visible = true
 }
+function onSlotSourceChange() {
+  // 切换来源清空名称/类型/后缀，避免跨路残留
+  slotDialog.form.child_type_id = null
+  slotDialog.form.name = ''
+  slotDialog.suffix = ''
+}
+function onSlotVariantMode() {
+  slotDialog.form.variant_group = ''  // 切换三态清空组名，避免误带
+}
+
+// 当前父下已存在的「选择组」(variant_group 去重) + 成员名，供"加入已有组"下拉与查重
+const existingGroups = computed<{ group: string; members: string[] }[]>(() => {
+  const map = new Map<string, string[]>()
+  for (const s of selected.value?.slots ?? []) {
+    if (!s.variant_group) continue
+    if (!map.has(s.variant_group)) map.set(s.variant_group, [])
+    map.get(s.variant_group)!.push(typeName(s.child_type_id) as string)
+  }
+  return [...map.entries()].map(([group, members]) => ({ group, members }))
+})
+// 选已有类型路：槽名继承类型名(+可选区分后缀)
+const slotInheritedName = computed(() => {
+  if (slotDialog.source !== 'existing' || !slotDialog.form.child_type_id) return ''
+  const base = typeName(slotDialog.form.child_type_id) as string
+  const sfx = slotDialog.suffix.trim()
+  return sfx ? `${base}-${sfx}` : base
+})
+// 同父已存在引用同一 child_type 的活跃槽 → 解锁区分后缀(否则两槽同名易混)
+const slotDupChildType = computed(() =>
+  slotDialog.source === 'existing' && slotDialog.form.child_type_id != null
+  && (selected.value?.slots ?? []).some(
+    (s: any) => s.child_type_id === slotDialog.form.child_type_id && s.is_active))
 
 // ---- 在位编辑（仅可变字段；code/所属结构不可改，物理删除不存在）----
 const editDialog = reactive({
@@ -40,8 +77,12 @@ const editDialog = reactive({
   kind: 'attr' as 'type' | 'attr' | 'option' | 'slot',
   id: 0,
   refCount: 0,
+  variantMode: 'none' as VariantMode,  // 编辑槽时的 N选1 三态
   form: {} as Record<string, any>,
 })
+function onEditVariantMode() {
+  editDialog.form.variant_group = ''  // 切到普通/重选时清空，select/input 重新赋值
+}
 
 const EDIT_TITLES = { type: '编辑节点类型', attr: '编辑属性', option: '编辑选项', slot: '编辑部件槽' }
 
@@ -63,6 +104,7 @@ function openEdit(kind: typeof editDialog.kind, row: any, refCount = 0) {
       name: row.name, is_required: row.is_required, allow_blackbox: row.allow_blackbox,
       variant_group: row.variant_group ?? '',
     }
+    editDialog.variantMode = row.variant_group ? 'existing' : 'none'
   }
   editDialog.visible = true
 }
@@ -275,37 +317,72 @@ async function toggleOption(o: any) {
   ElMessage.success(o.is_active ? '已停用：新配置不可选，既有 SKU 不受影响' : '已启用')
 }
 
+// 三态归组 → 最终 variant_group 字符串(null=普通)
+function resolveVariantGroup(): string | null {
+  if (slotDialog.variantMode === 'existing') return slotDialog.form.variant_group || null
+  if (slotDialog.variantMode === 'new') return slotDialog.form.variant_group.trim() || null
+  return null
+}
+
 async function createSlot() {
-  try {
-    if (!slotDialog.form.name) {
-      ElMessage.warning('请填写部件名称')
+  // 起点二分叉：用现存部件=名称继承类型名(+后缀)；新建部件=输入名兼作新类型名与槽名
+  let childTypeId: number | null
+  let slotName: string
+  if (slotDialog.source === 'existing') {
+    if (!slotDialog.form.child_type_id) {
+      ElMessage.warning('请选择已有的部件类型')
       return
     }
-    let childTypeId = slotDialog.form.child_type_id
-    // 现场新建部件类型：先建一个 part 类型（code 后端自动生成），再用它建槽
+    childTypeId = slotDialog.form.child_type_id
+    slotName = slotInheritedName.value
+  } else {
+    if (!slotDialog.form.name.trim()) {
+      ElMessage.warning('请填写新部件名称')
+      return
+    }
+    childTypeId = null  // 待新建
+    slotName = slotDialog.form.name.trim()
+  }
+  const variantGroup = resolveVariantGroup()
+  // 新建组·同父查重(纯前端防呆，重名后端无害但易误合并)
+  if (slotDialog.variantMode === 'new' && variantGroup
+      && existingGroups.value.some((g) => g.group === variantGroup)) {
+    ElMessage.warning(`选择组「${variantGroup}」已存在，请改用「加入已有组」`)
+    return
+  }
+
+  let newTypeId: number | null = null
+  try {
     if (slotDialog.source === 'new') {
-      const { data } = await api.post('/template/node-types', {
-        name: slotDialog.form.name, kind: 'part',
-      })
-      childTypeId = data.id
+      // 第一步：建新部件类型（code 后端自动生成）
+      const { data } = await api.post('/template/node-types', { name: slotName, kind: 'part' })
+      newTypeId = data.id
+      childTypeId = newTypeId
       await loadTypes()
     }
-    if (!childTypeId) {
-      ElMessage.warning('请选择部件类型')
-      return
+    try {
+      // 第二步：挂槽（code 留空由后端生成、父下唯一；指纹只认 code 不认 name）
+      await api.post(`/template/node-types/${selected.value.id}/slots`, {
+        name: slotName,
+        child_type_id: childTypeId,
+        is_required: slotDialog.form.is_required,
+        allow_blackbox: slotDialog.form.allow_blackbox,
+        variant_group: variantGroup,
+      })
+    } catch (slotErr) {
+      // 失败兜底：停用刚建的临时类型，杜绝"未挂载孤儿类型"(409 原因由拦截器已提示)
+      if (newTypeId != null) {
+        await api.patch(`/template/node-types/${newTypeId}`, { is_active: false }).catch(() => {})
+        await loadTypes()
+        ElMessage.warning('挂载失败，已自动清理刚建的未挂载临时类型')
+      }
+      throw slotErr
     }
-    await api.post(`/template/node-types/${selected.value.id}/slots`, {
-      name: slotDialog.form.name,
-      child_type_id: childTypeId,
-      is_required: slotDialog.form.is_required,
-      allow_blackbox: slotDialog.form.allow_blackbox,
-      variant_group: slotDialog.form.variant_group.trim() || null,
-    })
     slotDialog.visible = false
     await select(selected.value)
     ElMessage.success('部件槽已创建')
   } catch {
-    // 409（如 code 重复、形成环）由拦截器提示
+    // 409（DAG 防环 / code 冲突等）由拦截器提示
   }
 }
 
@@ -578,13 +655,28 @@ function typeName(id: number) {
       </template>
       <template v-else>
         <el-form-item label="名称" required><el-input v-model="editDialog.form.name" /></el-form-item>
-        <el-form-item label="必配"><el-switch v-model="editDialog.form.is_required" /></el-form-item>
+        <el-form-item label="必配">
+          <el-switch v-model="editDialog.form.is_required" :disabled="editDialog.variantMode !== 'none'" />
+          <span v-if="editDialog.variantMode !== 'none'" style="margin-left: 8px; font-size: 12px; color: var(--el-text-color-secondary)">归组后由选择组接管</span>
+        </el-form-item>
         <el-form-item label="允许成品件"><el-switch v-model="editDialog.form.allow_blackbox" /></el-form-item>
-        <el-form-item label="互斥组">
-          <el-input
-            v-model="editDialog.form.variant_group"
-            placeholder="如 型号：同组槽配置时 N 选 1；留空=普通槽"
-          />
+        <el-form-item label="这个位置是">
+          <el-radio-group v-model="editDialog.variantMode" @change="onEditVariantMode">
+            <el-radio-button value="none">普通位置</el-radio-button>
+            <el-radio-button value="existing" :disabled="!existingGroups.length">加入选择组</el-radio-button>
+            <el-radio-button value="new">新建选择组</el-radio-button>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item v-if="editDialog.variantMode === 'existing'" label="选择组">
+          <el-select v-model="editDialog.form.variant_group" style="width: 100%" placeholder="加入哪个 N选1 组">
+            <el-option
+              v-for="g in existingGroups" :key="g.group" :value="g.group"
+              :label="`${g.group}（${g.members.join('、')}）`"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-else-if="editDialog.variantMode === 'new'" label="新组名">
+          <el-input v-model="editDialog.form.variant_group" placeholder="业务名，如 阀门型号" />
         </el-form-item>
       </template>
     </el-form>
@@ -594,42 +686,85 @@ function typeName(id: number) {
     </template>
   </el-dialog>
 
-  <el-dialog v-model="slotDialog.visible" title="新建部件槽" width="460">
-    <el-form label-width="110px">
-      <el-form-item label="名称" required>
-        <el-input v-model="slotDialog.form.name" placeholder="部件名，如 顶杆；新建类型时同时作为部件名" />
+  <el-dialog v-model="slotDialog.visible" title="新建部件槽" width="520">
+    <el-form label-width="96px">
+      <!-- 第一步·起点二分叉 -->
+      <el-form-item label="部件来源">
+        <el-segmented
+          v-model="slotDialog.source" @change="onSlotSourceChange"
+          :options="[{ label: '用现存部件', value: 'existing' }, { label: '新建部件', value: 'new' }]"
+        />
       </el-form-item>
-      <el-form-item label="部件类型" required>
-        <el-radio-group v-model="slotDialog.source" style="margin-bottom: 8px">
-          <el-radio-button value="existing">选用已有类型</el-radio-button>
-          <el-radio-button value="new">现场新建类型</el-radio-button>
+
+      <!-- 路A：用现存部件——名称继承类型名 -->
+      <template v-if="slotDialog.source === 'existing'">
+        <el-form-item label="部件类型" required>
+          <el-select
+            v-model="slotDialog.form.child_type_id" filterable style="width: 100%"
+            placeholder="选择已有的部件类型" @change="slotDialog.suffix = ''"
+          >
+            <el-option
+              v-for="t in types.filter(t => t.is_active)" :key="t.id" :value="t.id"
+              :label="`${t.name}（${t.code}）`"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="slotDialog.form.child_type_id" label="该位置名称">
+          <span style="font-size: 14px">{{ slotInheritedName }}</span>
+          <span style="margin-left: 8px; font-size: 12px; color: var(--el-text-color-secondary)">随类型名 · 不可改</span>
+        </el-form-item>
+        <el-form-item v-if="slotDupChildType" label="区分后缀">
+          <el-input v-model="slotDialog.suffix" placeholder="如 进气 / 排气" style="width: 200px" />
+          <span style="margin-left: 8px; font-size: 12px; color: var(--el-text-color-secondary)">同父已有同类型槽，加后缀区分</span>
+        </el-form-item>
+      </template>
+
+      <!-- 路B：新建部件——输入名兼作新类型名与槽名 -->
+      <template v-else>
+        <el-form-item label="新部件名称" required>
+          <el-input v-model="slotDialog.form.name" placeholder="新零件名，如 顶杆（编码自动生成）" />
+        </el-form-item>
+        <el-alert
+          type="info" :closable="false" style="margin-bottom: 14px"
+          title="将新建一个部件类型并挂到当前部件下；建好后可在左栏选中它，继续给它加属性、拆下一级部件（递归）。"
+        />
+      </template>
+
+      <el-form-item label="必配">
+        <el-switch v-model="slotDialog.form.is_required" :disabled="slotDialog.variantMode !== 'none'" />
+        <span v-if="slotDialog.variantMode !== 'none'" style="margin-left: 8px; font-size: 12px; color: var(--el-text-color-secondary)">归组后由选择组接管（恰好选一种）</span>
+      </el-form-item>
+      <el-form-item label="允许成品件">
+        <el-switch v-model="slotDialog.form.allow_blackbox" />
+        <span style="margin-left: 8px; font-size: 12px; color: var(--el-text-color-secondary)">可整件外购、不再往下拆</span>
+      </el-form-item>
+
+      <!-- N选1 三态控件 -->
+      <el-form-item label="这个位置是">
+        <el-radio-group v-model="slotDialog.variantMode" @change="onSlotVariantMode">
+          <el-radio-button value="none">普通位置</el-radio-button>
+          <el-radio-button value="existing" :disabled="!existingGroups.length">加入已有组</el-radio-button>
+          <el-radio-button value="new">新建选择组</el-radio-button>
         </el-radio-group>
-        <el-select
-          v-if="slotDialog.source === 'existing'"
-          v-model="slotDialog.form.child_type_id" filterable style="width: 100%"
-          placeholder="选择已有的部件类型"
-        >
+      </el-form-item>
+      <el-form-item v-if="slotDialog.variantMode === 'existing'" label="选择组">
+        <el-select v-model="slotDialog.form.variant_group" style="width: 100%" placeholder="加入哪个 N选1 组">
           <el-option
-            v-for="t in types.filter(t => t.is_active)" :key="t.id" :value="t.id"
-            :label="`${t.name}（${t.code}）`"
+            v-for="g in existingGroups" :key="g.group" :value="g.group"
+            :label="`${g.group}（${g.members.join('、')}）`"
           />
         </el-select>
-        <el-alert
-          v-else type="info" :closable="false"
-          title="将以上面的名称新建一个部件类型（编码自动生成）并挂到当前部件下"
-        />
       </el-form-item>
-      <el-form-item label="必配"><el-switch v-model="slotDialog.form.is_required" /></el-form-item>
-      <el-form-item label="允许成品件"><el-switch v-model="slotDialog.form.allow_blackbox" /></el-form-item>
-      <el-form-item label="互斥组">
-        <el-input
-          v-model="slotDialog.form.variant_group"
-          placeholder="如 型号：同组多个槽配置时 N 选 1；留空=普通槽"
-        />
+      <el-form-item v-else-if="slotDialog.variantMode === 'new'" label="新组名">
+        <el-input v-model="slotDialog.form.variant_group" placeholder="业务名，如 阀门型号" />
       </el-form-item>
       <el-alert
-        v-if="slotDialog.source === 'new'" type="info" :closable="false"
-        title="将新建一个部件类型并挂到当前部件下。建好后可在左栏选中它，继续给它加属性和下一级部件（递归拆解）。"
+        v-if="slotDialog.variantMode === 'new'" type="info" :closable="false" style="margin-bottom: 4px"
+        title="N选1 至少需 2 款：本槽是第 1 款，记得再给本位置添加其他款式槽。"
+      />
+      <el-alert
+        v-else-if="slotDialog.variantMode === 'existing'" type="info" :closable="false" style="margin-bottom: 4px"
+        title="同组「恰好选一种」，单槽必配由选择组统一判定。"
       />
     </el-form>
     <template #footer>
