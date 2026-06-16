@@ -63,6 +63,15 @@ def _editable(quote: Quote) -> None:
         raise HTTPException(409, "报价单已导出冻结，如需修改请复制为新草稿")
 
 
+def _own_quote_or_404(db: Session, quote_id: int, user: AppUser) -> Quote:
+    """对象级归属闸：仅创建者本人或管理员可访问，否则一律 404（不泄露单据是否存在）。
+    封堵 IDOR——此前所有 /quotes/{id} 端点仅认登录、不校验归属，任意用户可枚举读改他人报价。"""
+    quote = db.get(Quote, quote_id)
+    if quote is None or (quote.created_by != user.id and user.role != "admin"):
+        raise HTTPException(404, "报价单不存在")
+    return quote
+
+
 @router.get("", response_model=list[QuoteOut])
 def list_quotes(
     mine: bool = True,
@@ -70,7 +79,8 @@ def list_quotes(
     user: AppUser = Depends(get_current_user),
 ):
     stmt = select(Quote).order_by(Quote.id.desc()).limit(100)
-    if mine:
+    # 非管理员强制只看自己的单：mine=false 不得用于越权浏览他人报价
+    if mine or user.role != "admin":
         stmt = stmt.where(Quote.created_by == user.id)
     return [_quote_out(db, q) for q in db.execute(stmt).scalars().all()]
 
@@ -98,9 +108,9 @@ def create_quote(
 
 @router.get("/{quote_id}", response_model=QuoteOut)
 def get_quote(
-    quote_id: int, db: Session = Depends(get_db), _: AppUser = Depends(get_current_user)
+    quote_id: int, db: Session = Depends(get_db), user: AppUser = Depends(get_current_user)
 ):
-    return _quote_out(db, get_or_404(db, Quote, quote_id))
+    return _quote_out(db, _own_quote_or_404(db, quote_id, user))
 
 
 @router.patch("/{quote_id}", response_model=QuoteOut)
@@ -108,7 +118,7 @@ def update_quote(
     quote_id: int, body: QuoteUpdate,
     db: Session = Depends(get_db), user: AppUser = Depends(get_current_user),
 ):
-    quote = get_or_404(db, Quote, quote_id)
+    quote = _own_quote_or_404(db, quote_id, user)
     _editable(quote)
     data = body.model_dump(exclude_unset=True)
     if "valid_until" in data and data["valid_until"]:
@@ -124,7 +134,7 @@ def add_item(
     quote_id: int, body: QuoteItemIn,
     db: Session = Depends(get_db), user: AppUser = Depends(get_current_user),
 ):
-    quote = get_or_404(db, Quote, quote_id)
+    quote = _own_quote_or_404(db, quote_id, user)
     _editable(quote)
     sku = get_or_404(db, Sku, body.sku_id)
     if sku.status != "active":
@@ -175,7 +185,7 @@ def update_item(
     quote_id: int, item_id: int, body: QuoteItemUpdate,
     db: Session = Depends(get_db), user: AppUser = Depends(get_current_user),
 ):
-    quote = get_or_404(db, Quote, quote_id)
+    quote = _own_quote_or_404(db, quote_id, user)
     _editable(quote)
     item = next((i for i in quote.items if i.id == item_id), None)
     if item is None:
@@ -198,9 +208,9 @@ def update_item(
 @router.delete("/{quote_id}/items/{item_id}", response_model=QuoteOut)
 def remove_item(
     quote_id: int, item_id: int,
-    db: Session = Depends(get_db), _: AppUser = Depends(get_current_user),
+    db: Session = Depends(get_db), user: AppUser = Depends(get_current_user),
 ):
-    quote = get_or_404(db, Quote, quote_id)
+    quote = _own_quote_or_404(db, quote_id, user)
     _editable(quote)
     item = next((i for i in quote.items if i.id == item_id), None)
     if item is None:
@@ -212,10 +222,10 @@ def remove_item(
 
 @router.get("/{quote_id}/price-check", response_model=PriceCheckOut)
 def price_check(
-    quote_id: int, db: Session = Depends(get_db), _: AppUser = Depends(get_current_user)
+    quote_id: int, db: Session = Depends(get_db), user: AppUser = Depends(get_current_user)
 ):
     """导出前校验：快照价与现价是否一致。前端据此提示 [刷新为最新价]/[按原快照导出]。"""
-    quote = get_or_404(db, Quote, quote_id)
+    quote = _own_quote_or_404(db, quote_id, user)
     changed = [
         i for i in (_item_out(db, it, quote.currency) for it in quote.items) if i.price_changed
     ]
@@ -226,7 +236,7 @@ def price_check(
 def refresh_prices(
     quote_id: int, db: Session = Depends(get_db), user: AppUser = Depends(get_current_user)
 ):
-    quote = get_or_404(db, Quote, quote_id)
+    quote = _own_quote_or_404(db, quote_id, user)
     _editable(quote)
     for item in quote.items:
         current = next(
@@ -244,7 +254,7 @@ def refresh_prices(
 def duplicate(
     quote_id: int, db: Session = Depends(get_db), user: AppUser = Depends(get_current_user)
 ):
-    src = get_or_404(db, Quote, quote_id)
+    src = _own_quote_or_404(db, quote_id, user)
     quote = Quote(
         quote_no=next_code(db, "Q"),
         customer_name=src.customer_name,
@@ -277,7 +287,7 @@ def export_excel(
 
     现价与快照不一致时默认拒绝，force_snapshot=true 表示业务员确认按原快照导出。
     """
-    quote = get_or_404(db, Quote, quote_id)
+    quote = _own_quote_or_404(db, quote_id, user)
     if not quote.items:
         raise HTTPException(409, "报价单没有明细行")
     if quote.status == "draft" and not force_snapshot:

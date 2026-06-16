@@ -44,6 +44,38 @@ from app.services.template_service import get_or_404
 
 router = APIRouter(prefix="/skus", tags=["skus"])
 
+# 待治理(残货)的集合下推判定：替代"逐 SKU 跑 compute_health"的 O(n) 全表遍历(海量数据会超时)。
+# 命中条件 = 在售 SKU 的配置树引用了已停用/不可用的模板要素，或缺失"现已必选"的属性/部件槽：
+#   ① 停用的节点类型  ② 不可用的成品件(非 draft/active)  ③ 停用的供应商  ④ 停用的选项
+#   ⑤ 该节点类型现有"必选且启用"的属性，但本节点未取值(completeness)
+#   ⑥ 该节点类型现有"必配·启用·非互斥"的部件槽，但本节点该槽下无子节点(completeness·模板事后加必配槽的漂移)
+# 覆盖 supply 全族 + completeness 的可下推主因。仅剩"互斥组(variant_group)结构违规"(0选/多选，
+# 极罕见、需模板事后重构互斥组所致)不在此快速口径内；单 SKU 的权威健康仍以
+# health_engine.compute_health 为准(详情页 / 报价闸 / 列表逐行徽标)。引用外层 sku.id 作 WHERE 谓词嵌入。
+_NONOK_SKU = """(
+  EXISTS (SELECT 1 FROM sku_config_node cn JOIN node_type nt ON nt.id = cn.node_type_id
+          WHERE cn.sku_id = sku.id AND nt.is_active = false)
+  OR EXISTS (SELECT 1 FROM sku_config_node cn JOIN purchased_part pp ON pp.id = cn.purchased_part_id
+             WHERE cn.sku_id = sku.id AND pp.status NOT IN ('draft', 'active'))
+  OR EXISTS (SELECT 1 FROM sku_config_node cn JOIN supplier su ON su.id = cn.supplier_id
+             WHERE cn.sku_id = sku.id AND su.is_active = false)
+  OR EXISTS (SELECT 1 FROM sku_config_node cn JOIN sku_attribute_value av ON av.config_node_id = cn.id
+             JOIN attribute_option ao ON ao.id = av.option_id
+             WHERE cn.sku_id = sku.id AND ao.is_active = false)
+  OR EXISTS (SELECT 1 FROM sku_config_node cn
+             JOIN attribute_def ad ON ad.node_type_id = cn.node_type_id
+                  AND ad.is_active AND ad.is_required
+             WHERE cn.sku_id = sku.id AND cn.mode = 'configured'
+               AND NOT EXISTS (SELECT 1 FROM sku_attribute_value av
+                               WHERE av.config_node_id = cn.id AND av.attribute_id = ad.id))
+  OR EXISTS (SELECT 1 FROM sku_config_node cn
+             JOIN component_slot cs ON cs.parent_type_id = cn.node_type_id
+                  AND cs.is_active AND cs.is_required AND cs.variant_group IS NULL
+             WHERE cn.sku_id = sku.id AND cn.mode = 'configured'
+               AND NOT EXISTS (SELECT 1 FROM sku_config_node ch
+                               WHERE ch.parent_node_id = cn.id AND ch.slot_id = cs.id))
+)"""
+
 
 def _sku_out(db: Session, sku: Sku, health_status: str | None = None) -> SkuOut:
     out = SkuOut.model_validate(sku, from_attributes=True)
@@ -144,8 +176,8 @@ def search(
             ~Sku.id.in_(select(sql_text("sku_id")).select_from(sql_text("v_sku_current_price"))),
         )
     elif status == "incomplete":
-        # 残货 = active 且健康检测非 ok（实时推导，无法 SQL 下推，末尾特殊处理）
-        stmt = stmt.where(Sku.status == "active")
+        # 残货 = active 且引用停用要素/缺必选属性，集合下推（见 _NONOK_SKU），与统计带口径一致
+        stmt = stmt.where(Sku.status == "active", sql_text(_NONOK_SKU))
     elif status is not None:
         stmt = stmt.where(Sku.status == status)
     for oid in option_id:
@@ -179,14 +211,6 @@ def search(
     # 健康检测要遍历配置树，预取避免 N+1；type_cache 跨 SKU 复用类型查询
     stmt = stmt.options(selectinload(Sku.nodes).selectinload(SkuConfigNode.attribute_values))
     type_cache: dict = {}
-    if status == "incomplete":
-        # 实时推导：候选 active 全量 → 算 health → 过滤残货 → Python 分页
-        scored = [(s, compute_health(db, s, type_cache))
-                  for s in db.execute(stmt.order_by(Sku.id.desc())).scalars().all()]
-        residual = [(s, h) for s, h in scored if h.status != "ok"]
-        total = len(residual)
-        page_rows = residual[(page - 1) * page_size: page * page_size]
-        return SkuListOut(total=total, items=[_sku_out(db, s, h.status) for s, h in page_rows])
     total = db.execute(select(func.count()).select_from(stmt.subquery())).scalar_one()
     rows = db.execute(
         stmt.order_by(Sku.id.desc()).offset((page - 1) * page_size).limit(page_size)
@@ -224,14 +248,11 @@ def stats(db: Session = Depends(get_db), _: AppUser = Depends(get_current_user))
             (SkuPrice.valid_to.is_(None)) | (SkuPrice.valid_to >= today),
         )
     ).scalar_one()
-    # 待治理（残货）：在售且健康检测非 ok（红 completeness/structural + 黄 supply）
-    active_skus = db.execute(
-        select(Sku)
-        .options(selectinload(Sku.nodes).selectinload(SkuConfigNode.attribute_values))
-        .where(Sku.status == "active")
-    ).scalars().all()
-    tc: dict = {}
-    incomplete = sum(1 for s in active_skus if compute_health(db, s, tc).status != "ok")
+    # 待治理（残货）：在售且引用停用要素/缺必选属性——集合下推，O(1) 查询而非逐 SKU 遍历
+    incomplete = db.execute(
+        select(func.count()).select_from(Sku)
+        .where(Sku.status == "active", sql_text(_NONOK_SKU))
+    ).scalar_one()
     return SkuStatsOut(active=active, pending_price=pending,
                        new_this_week=new_week, stale_30d=stale, incomplete=incomplete)
 
@@ -239,42 +260,52 @@ def stats(db: Session = Depends(get_db), _: AppUser = Depends(get_current_user))
 @router.get("/overview", response_model=list[SkuOverviewOut])
 def overview(db: Session = Depends(get_db), _: AppUser = Depends(get_current_user)):
     """产品全貌：按可售品类聚合（比 SKU 粗一档）。产品库首页"全貌"视图的数据源。"""
-    priced_ids = set(
-        db.execute(select(sql_text("sku_id")).select_from(sql_text("v_sku_current_price")))
-        .scalars().all()
-    )
+    # ① 每根一次 GROUP BY 聚合：sku_count / pending(无任何币种现价) / incomplete(残货·_NONOK_SKU 下推)
+    #    彻底替代原"逐根 selectinload 全部在售 SKU 整树 + 逐 SKU compute_health/现价"的 O(n) 重聚合
+    #    （即旧 /stats 12s 超时同款模式）。规模无关，常数条查询。
+    count_rows = db.execute(sql_text(f"""
+        SELECT sku.root_type_id AS rid,
+               count(*) AS sku_count,
+               count(*) FILTER (
+                   WHERE NOT EXISTS (SELECT 1 FROM v_sku_current_price cp WHERE cp.sku_id = sku.id)
+               ) AS pending,
+               count(*) FILTER (WHERE {_NONOK_SKU}) AS incomplete
+        FROM sku
+        WHERE sku.status = 'active'
+        GROUP BY sku.root_type_id
+    """)).all()
+    counts = {r.rid: r for r in count_rows}
+    # ② 每根×币种聚合现价 min/max；取条目最多的币种为代表（避免跨币种混算 min/max 的旧问题）
+    price_rows = db.execute(sql_text("""
+        SELECT sku.root_type_id AS rid, cp.currency AS currency,
+               min(cp.price) AS pmin, max(cp.price) AS pmax, count(*) AS n
+        FROM sku JOIN v_sku_current_price cp ON cp.sku_id = sku.id
+        WHERE sku.status = 'active'
+        GROUP BY sku.root_type_id, cp.currency
+    """)).all()
+    price_by_root: dict = {}
+    for r in price_rows:
+        cur = price_by_root.get(r.rid)
+        if cur is None or r.n > cur["n"]:
+            price_by_root[r.rid] = {"currency": r.currency, "pmin": r.pmin, "pmax": r.pmax, "n": r.n}
+    # ③ 列出全部可售根（含 0 SKU 的），带槽/属性计数
     roots = db.execute(
         select(NodeType).where(NodeType.is_sellable_root.is_(True))
         .options(selectinload(NodeType.slots), selectinload(NodeType.attributes))
         .order_by(NodeType.display_order, NodeType.id)
     ).scalars().all()
-    tc: dict = {}
     out: list[SkuOverviewOut] = []
     for rt in roots:
-        skus = db.execute(
-            select(Sku)
-            .options(selectinload(Sku.nodes).selectinload(SkuConfigNode.attribute_values))
-            .where(Sku.status == "active", Sku.root_type_id == rt.id)
-        ).scalars().all()
-        incomplete = pending = 0
-        prices: list = []
-        currency = None
-        for s in skus:
-            if compute_health(db, s, tc).status != "ok":
-                incomplete += 1
-            cps = _current_prices(db, s.id)
-            if cps:
-                for p in cps:
-                    prices.append(p.price)
-                    currency = p.currency
-            else:
-                pending += 1
+        c = counts.get(rt.id)
+        p = price_by_root.get(rt.id)
         out.append(SkuOverviewOut(
             root_type_id=rt.id, root_type_name=rt.name, kind=rt.kind,
-            sku_count=len(skus), incomplete=incomplete, pending_price=pending,
-            price_min=min(prices) if prices else None,
-            price_max=max(prices) if prices else None,
-            currency=currency,
+            sku_count=c.sku_count if c else 0,
+            incomplete=c.incomplete if c else 0,
+            pending_price=c.pending if c else 0,
+            price_min=p["pmin"] if p else None,
+            price_max=p["pmax"] if p else None,
+            currency=p["currency"] if p else None,
             slot_count=len([x for x in rt.slots if x.is_active]),
             attr_count=len([a for a in rt.attributes if a.is_active]),
         ))

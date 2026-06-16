@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -9,7 +10,10 @@ class Settings(BaseSettings):
     )
 
     database_url: str = "postgresql+psycopg://producthub:producthub_dev@127.0.0.1:5440/producthub"
-    jwt_secret: str = "dev-only-secret-change-me-0123456789abcdef"  # ≥32 字节，生产必须替换
+    # JWT 密钥：必填、代码内零默认值（缺失即启动失败），≥32 字节。生产由环境/密钥管理注入，
+    # dev 见 backend/.env、测试见 conftest。绝不在代码留可用默认值——否则任何人凭公开默认串即可
+    # 离线伪造管理员令牌、绕过登录直踩"数据库绝不能数据混乱"红线。
+    jwt_secret: str = Field(min_length=32)
     jwt_algorithm: str = "HS256"
     access_token_minutes: int = 30
     refresh_token_days: int = 7

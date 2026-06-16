@@ -108,16 +108,27 @@ def confirm(
 
     report = []
     ok = err = 0
-    # 单事务：全量重校验后入库；任何意外异常整体回滚
+    # 逐行 SAVEPOINT 隔离：坏行只回滚本行、好行照常入库；批末统一 commit。
+    # 关键修复——此前整批同一事务，任一行价格撞 sku_price 的 EXCLUDE 重叠约束会拖到
+    # 最终 commit 才爆、整批回滚，但前端已收到"成功"行→报告成功 ≠ 实际落库（数据撕裂）。
     for row in raw_rows:
         try:
-            item = process_row(
-                db, row["cells"], commit_mode=True, actor_id=admin.id, batch_id=batch.id
-            )
+            with db.begin_nested():  # 行级 savepoint
+                item = process_row(
+                    db, row["cells"], commit_mode=True, actor_id=admin.id, batch_id=batch.id
+                )
+                db.flush()  # 强制把本行价格/约束写下去，让 EXCLUDE 等冲突当场暴露而非拖到批末
             item["row_no"] = row["row_no"]
             ok += 1
         except RowError as e:
             item = {"row_no": row["row_no"], "status": "error", "message": str(e)}
+            err += 1
+        except IntegrityError as e:
+            detail = str(getattr(e, "orig", e)).lower()
+            msg = ("价格生效期与该 SKU 既有现价重叠（同币种），该行未入库"
+                   if "excl_sku_price_overlap" in detail or "exclusion" in detail
+                   else "数据库约束冲突，该行未入库")
+            item = {"row_no": row["row_no"], "status": "error", "message": msg}
             err += 1
         report.append(item)
 

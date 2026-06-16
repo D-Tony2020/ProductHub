@@ -5,6 +5,8 @@ import os
 TEST_DB_URL = "postgresql+psycopg://producthub:producthub_dev@127.0.0.1:5440/producthub_test"
 ADMIN_DB_URL = "postgresql+psycopg://producthub:producthub_dev@127.0.0.1:5440/producthub"
 os.environ["PRODUCTHUB_DATABASE_URL"] = TEST_DB_URL
+# jwt_secret 现为必填项（无代码默认值）：测试注入一个 ≥32 字节的固定值
+os.environ.setdefault("PRODUCTHUB_JWT_SECRET", "test-only-jwt-secret-0123456789abcdefghij")
 
 import pytest
 from sqlalchemy import create_engine, select, text
