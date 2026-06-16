@@ -37,22 +37,30 @@ from app.schemas.sku import (
     SkuUpdateIn,
     SkuUpdateResult,
 )
-from app.services.config_engine import _current_prices, create_sku
+from app.services.config_engine import _current_prices, create_sku, current_prices_batch
 from app.services.graybox import summarize_spec
 from app.services.health_engine import compute_health, load_sku_for_health
 from app.services.template_service import get_or_404
 
 router = APIRouter(prefix="/skus", tags=["skus"])
 
-# 待治理(残货)的集合下推判定：替代"逐 SKU 跑 compute_health"的 O(n) 全表遍历(海量数据会超时)。
-# 命中条件 = 在售 SKU 的配置树引用了已停用/不可用的模板要素，或缺失"现已必选"的属性/部件槽：
-#   ① 停用的节点类型  ② 不可用的成品件(非 draft/active)  ③ 停用的供应商  ④ 停用的选项
-#   ⑤ 该节点类型现有"必选且启用"的属性，但本节点未取值(completeness)
-#   ⑥ 该节点类型现有"必配·启用·非互斥"的部件槽，但本节点该槽下无子节点(completeness·模板事后加必配槽的漂移)
-# 覆盖 supply 全族 + completeness 的可下推主因。仅剩"互斥组(variant_group)结构违规"(0选/多选，
-# 极罕见、需模板事后重构互斥组所致)不在此快速口径内；单 SKU 的权威健康仍以
-# health_engine.compute_health 为准(详情页 / 报价闸 / 列表逐行徽标)。引用外层 sku.id 作 WHERE 谓词嵌入。
-_NONOK_SKU = """(
+_EXPORT_CAP = 50000  # 导出行数上限：防海量下 openpyxl 全本驻内存爆内存；超限截断并在表尾标注
+
+# 现价存在性谓词（相关 EXISTS，走 ix_sku_price_current 部分索引；取代对视图的 IN/NOT IN 反连接，
+# 避免大表整表物化 sku_id 集合与 NOT IN 的 NULL 反连接代价）。引用外层 sku.id，FROM 须为未起别名的 sku。
+_HAS_CURRENT_PRICE = "EXISTS (SELECT 1 FROM v_sku_current_price cp WHERE cp.sku_id = sku.id)"
+_NO_CURRENT_PRICE = f"NOT {_HAS_CURRENT_PRICE}"
+
+# 健康的集合下推判定：替代"逐 SKU 跑 compute_health"的 O(n) 全表遍历(海量会超时)。
+# 拆成两族，与 compute_health 的 family 对齐，以支撑列表三态徽标 + 报价闸口径一致：
+#   · 供给族 _SUPPLY_SKU(黄·supply_warn·不阻断报价)：配置引用了停用/不可用的模板要素——
+#       ① 停用节点类型 ② 不可用成品件(非 draft/active) ③ 停用供应商 ④ 停用选项
+#   · 完整性族 _BLOCKING_SKU(红·incomplete·阻断报价)：缺"现已必选"的属性/必配非互斥槽——
+#       ⑤ 缺必选属性  ⑥ 缺必配·非互斥部件槽(模板事后收紧的漂移)
+# 待治理 = 两族之并(=非 ok)；stats/overview 计数用 _NONOK_SKU。仅"互斥组(variant_group)
+# 结构违规"(0选/多选·极罕见)不在此快速口径内；单 SKU 权威健康仍以 compute_health 为准。
+# 三处子句均引用外层 sku.id 作 WHERE 谓词嵌入(FROM 表须为未起别名的 sku)。
+_SUPPLY_SKU = """(
   EXISTS (SELECT 1 FROM sku_config_node cn JOIN node_type nt ON nt.id = cn.node_type_id
           WHERE cn.sku_id = sku.id AND nt.is_active = false)
   OR EXISTS (SELECT 1 FROM sku_config_node cn JOIN purchased_part pp ON pp.id = cn.purchased_part_id
@@ -62,12 +70,14 @@ _NONOK_SKU = """(
   OR EXISTS (SELECT 1 FROM sku_config_node cn JOIN sku_attribute_value av ON av.config_node_id = cn.id
              JOIN attribute_option ao ON ao.id = av.option_id
              WHERE cn.sku_id = sku.id AND ao.is_active = false)
-  OR EXISTS (SELECT 1 FROM sku_config_node cn
-             JOIN attribute_def ad ON ad.node_type_id = cn.node_type_id
-                  AND ad.is_active AND ad.is_required
-             WHERE cn.sku_id = sku.id AND cn.mode = 'configured'
-               AND NOT EXISTS (SELECT 1 FROM sku_attribute_value av
-                               WHERE av.config_node_id = cn.id AND av.attribute_id = ad.id))
+)"""
+_BLOCKING_SKU = """(
+  EXISTS (SELECT 1 FROM sku_config_node cn
+          JOIN attribute_def ad ON ad.node_type_id = cn.node_type_id
+               AND ad.is_active AND ad.is_required
+          WHERE cn.sku_id = sku.id AND cn.mode = 'configured'
+            AND NOT EXISTS (SELECT 1 FROM sku_attribute_value av
+                            WHERE av.config_node_id = cn.id AND av.attribute_id = ad.id))
   OR EXISTS (SELECT 1 FROM sku_config_node cn
              JOIN component_slot cs ON cs.parent_type_id = cn.node_type_id
                   AND cs.is_active AND cs.is_required AND cs.variant_group IS NULL
@@ -75,12 +85,37 @@ _NONOK_SKU = """(
                AND NOT EXISTS (SELECT 1 FROM sku_config_node ch
                                WHERE ch.parent_node_id = cn.id AND ch.slot_id = cs.id))
 )"""
+# 待治理 = 完整性族 ∪ 供给族（非 ok）。stats/overview/incomplete 筛选计数用。
+_NONOK_SKU = f"({_BLOCKING_SKU} OR {_SUPPLY_SKU})"
 
 
-def _sku_out(db: Session, sku: Sku, health_status: str | None = None) -> SkuOut:
+def _health_status_map(db: Session, sku_ids: list[int]) -> dict[int, str]:
+    """一次性判定一页 SKU 的健康徽标(集合下推)，替代逐行 compute_health。
+    返回 {sku_id: 'incomplete'|'supply_warn'}，未列入者即 'ok'。阻断优先于供给(与 compute_health 一致)。"""
+    if not sku_ids:
+        return {}
+    blocking = set(db.execute(
+        sql_text(f"SELECT sku.id FROM sku WHERE sku.id = ANY(:ids) AND {_BLOCKING_SKU}"),
+        {"ids": sku_ids}).scalars())
+    supply = set(db.execute(
+        sql_text(f"SELECT sku.id FROM sku WHERE sku.id = ANY(:ids) AND {_SUPPLY_SKU}"),
+        {"ids": sku_ids}).scalars())
+    return {sid: ("incomplete" if sid in blocking else "supply_warn")
+            for sid in (blocking | supply)}
+
+
+# 批量现价：复用 config_engine.current_prices_batch（与 _current_prices 同口径，单一真源）
+_current_prices_map = current_prices_batch
+
+
+def _sku_out(
+    db: Session, sku: Sku, health_status: str | None = None,
+    prices: list[CurrentPrice] | None = None,
+) -> SkuOut:
     out = SkuOut.model_validate(sku, from_attributes=True)
     out.root_type_name = sku.root_type.name if sku.root_type else ""
-    out.current_prices = _current_prices(db, sku.id)
+    # 批量场景由调用方预取现价传入(消 N+1)；单条场景回落到逐 SKU 查
+    out.current_prices = prices if prices is not None else _current_prices(db, sku.id)
     out.health_status = health_status  # 由调用方实时推导填入（列表/详情）
     if sku.superseded_by_sku_id and sku.superseded_by:
         out.superseded_by_sku_code = sku.superseded_by.sku_code  # 血缘展示
@@ -170,11 +205,8 @@ def search(
     if root_type_id is not None:
         stmt = stmt.where(Sku.root_type_id == root_type_id)
     if status == "pending_price":
-        # 待录价 = active 且无现行价（推导态，无冗余状态字段）
-        stmt = stmt.where(
-            Sku.status == "active",
-            ~Sku.id.in_(select(sql_text("sku_id")).select_from(sql_text("v_sku_current_price"))),
-        )
+        # 待录价 = active 且无现行价（推导态，无冗余状态字段）；NOT EXISTS 相关子查询走索引
+        stmt = stmt.where(Sku.status == "active", sql_text(_NO_CURRENT_PRICE))
     elif status == "incomplete":
         # 残货 = active 且引用停用要素/缺必选属性，集合下推（见 _NONOK_SKU），与统计带口径一致
         stmt = stmt.where(Sku.status == "active", sql_text(_NONOK_SKU))
@@ -208,30 +240,32 @@ def search(
                 .where(PurchasedPart.supplier_id == supplier_id)
             )
         )
-    # 健康检测要遍历配置树，预取避免 N+1；type_cache 跨 SKU 复用类型查询
-    stmt = stmt.options(selectinload(Sku.nodes).selectinload(SkuConfigNode.attribute_values))
-    type_cache: dict = {}
     total = db.execute(select(func.count()).select_from(stmt.subquery())).scalar_one()
+    # 列表徽标改集合下推(不再逐行 compute_health 遍历配置树)，现价改批量 IN(不再逐 SKU N+1)，
+    # 仅预取 root_type / superseded_by(展示用)——一页固定几条 SQL，与本页行数无关。
     rows = db.execute(
-        stmt.order_by(Sku.id.desc()).offset((page - 1) * page_size).limit(page_size)
+        stmt.options(selectinload(Sku.root_type), selectinload(Sku.superseded_by))
+        .order_by(Sku.id.desc()).offset((page - 1) * page_size).limit(page_size)
     ).scalars().all()
+    page_ids = [s.id for s in rows]
+    health = _health_status_map(db, page_ids)
+    prices = _current_prices_map(db, page_ids)
     return SkuListOut(
         total=total,
-        items=[_sku_out(db, s, compute_health(db, s, type_cache).status) for s in rows],
+        items=[_sku_out(db, s, health.get(s.id, "ok"), prices.get(s.id, [])) for s in rows],
     )
 
 
 @router.get("/stats", response_model=SkuStatsOut)
 def stats(db: Session = Depends(get_db), _: AppUser = Depends(get_current_user)):
     """SKU 库统计带：货架口径四个数。须声明在 /skus/{sku_id} 之前以免被动态路由捕获。"""
-    has_price = select(sql_text("sku_id")).select_from(sql_text("v_sku_current_price"))
     active = db.execute(
         select(func.count()).select_from(Sku)
-        .where(Sku.status == "active", Sku.id.in_(has_price))
+        .where(Sku.status == "active", sql_text(_HAS_CURRENT_PRICE))
     ).scalar_one()
     pending = db.execute(
         select(func.count()).select_from(Sku)
-        .where(Sku.status == "active", ~Sku.id.in_(has_price))
+        .where(Sku.status == "active", sql_text(_NO_CURRENT_PRICE))
     ).scalar_one()
     new_week = db.execute(
         select(func.count()).select_from(Sku)
@@ -318,22 +352,31 @@ def export_list(
     db: Session = Depends(get_db),
     _: AppUser = Depends(get_current_user),
 ):
-    """SKU 清单导出 Excel（业务员高频）。"""
-    stmt = select(Sku).where(Sku.status == "active").order_by(Sku.id)
+    """SKU 清单导出 Excel（业务员高频）。批量取现价 + 预取品类(消 N+1)；行数封顶防内存爆。"""
+    stmt = select(Sku).where(Sku.status == "active")
     if root_type_id is not None:
         stmt = stmt.where(Sku.root_type_id == root_type_id)
+    # 封顶 + 1 探测是否超限；预取 root_type 避免逐行 lazy
+    stmt = stmt.options(selectinload(Sku.root_type)).order_by(Sku.id).limit(_EXPORT_CAP + 1)
+    skus = db.execute(stmt).scalars().all()
+    truncated = len(skus) > _EXPORT_CAP
+    skus = skus[:_EXPORT_CAP]
+    prices_map = _current_prices_map(db, [s.id for s in skus])  # 一次批量 IN，替代逐 SKU N+1
     wb = Workbook()
     ws = wb.active
     ws.title = "SKU 清单"
     ws.append(["SKU 编码", "名称", "品类", "现价", "币种", "价格生效日", "状态"])
-    for sku in db.execute(stmt).scalars():
-        prices = _current_prices(db, sku.id)
+    for sku in skus:
+        prices = prices_map.get(sku.id, [])
         p: CurrentPrice | None = prices[0] if prices else None
         ws.append([
             sku.sku_code, sku.name, sku.root_type.name if sku.root_type else "",
             float(p.price) if p else None, p.currency if p else "",
             p.valid_from if p else "", "在售" if prices else "待录价",
         ])
+    if truncated:
+        ws.append([])
+        ws.append([f"⚠ 已截断：仅导出前 {_EXPORT_CAP} 条。请按品类/筛选缩小范围后再导出。"])
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)

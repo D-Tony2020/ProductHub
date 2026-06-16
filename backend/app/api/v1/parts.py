@@ -6,7 +6,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.core.audit import write_audit
 from app.core.db import get_db
@@ -32,13 +32,25 @@ from app.services.template_service import get_or_404
 router = APIRouter(tags=["parts"])
 
 
-def _part_out(db: Session, part: PurchasedPart) -> PurchasedPartOut:
+def _ref_counts(db: Session, part_ids: list[int]) -> dict[int, int]:
+    """一次 GROUP BY 批量取多件的被引用 SKU 数，替代逐件 COUNT 子查询的 N+1。"""
+    if not part_ids:
+        return {}
+    return dict(db.execute(
+        select(SkuConfigNode.purchased_part_id, func.count())
+        .where(SkuConfigNode.purchased_part_id.in_(part_ids))
+        .group_by(SkuConfigNode.purchased_part_id)
+    ).all())
+
+
+def _part_out(db: Session, part: PurchasedPart, ref_count: int | None = None) -> PurchasedPartOut:
     out = PurchasedPartOut.model_validate(part)
     out.supplier_name = part.supplier.name if part.supplier else ""
     out.node_type_name = part.node_type.name if part.node_type else ""
     out.node_type_kind = part.node_type.kind if part.node_type else ""
     out.spec_summary = summarize_spec(db, part.spec_config)
-    out.reference_count = db.execute(
+    # 批量场景由调用方预取引用数(消 N+1)；单条场景回落到逐件 COUNT
+    out.reference_count = ref_count if ref_count is not None else db.execute(
         select(func.count()).select_from(SkuConfigNode).where(
             SkuConfigNode.purchased_part_id == part.id
         )
@@ -161,7 +173,12 @@ def list_parts(
             PurchasedPart.name.ilike(like)
             | PurchasedPart.supplier.has(Supplier.name.ilike(like))
         )
-    return [_part_out(db, p) for p in db.execute(stmt).scalars().all()]
+    # 预取 supplier/node_type(消逐件 lazy) + 批量引用数(消逐件 COUNT)
+    parts = db.execute(
+        stmt.options(selectinload(PurchasedPart.supplier), selectinload(PurchasedPart.node_type))
+    ).scalars().all()
+    ref = _ref_counts(db, [p.id for p in parts])
+    return [_part_out(db, p, ref.get(p.id, 0)) for p in parts]
 
 
 @router.get("/purchased-parts/by-id/{part_id}", response_model=PurchasedPartDetailOut)
@@ -198,7 +215,15 @@ def similar_parts(
         ),
         {"tid": node_type_id, "name": name},
     ).scalars().all()
-    return [_part_out(db, db.get(PurchasedPart, i)) for i in rows]
+    if not rows:
+        return []
+    parts = {p.id: p for p in db.execute(
+        select(PurchasedPart)
+        .options(selectinload(PurchasedPart.supplier), selectinload(PurchasedPart.node_type))
+        .where(PurchasedPart.id.in_(rows))
+    ).scalars()}
+    ref = _ref_counts(db, list(rows))
+    return [_part_out(db, parts[i], ref.get(i, 0)) for i in rows if i in parts]  # 保留 trigram 相似度序
 
 
 @router.post("/purchased-parts", response_model=PurchasedPartOut, status_code=201)

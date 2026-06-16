@@ -8,7 +8,7 @@ from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.core.audit import write_audit
 from app.core.config import get_settings
@@ -25,16 +25,21 @@ from app.schemas.quote import (
     QuoteUpdate,
 )
 from app.services.codes import next_code
-from app.services.config_engine import _current_prices
+from app.services.config_engine import _current_prices, current_prices_batch
 from app.services.health_engine import compute_health, load_sku_for_health
 from app.services.template_service import get_or_404
 
 router = APIRouter(prefix="/quotes", tags=["quotes"])
 
 
-def _item_out(db: Session, item: QuoteItem, currency: str) -> QuoteItemOut:
-    sku = db.get(Sku, item.sku_id)
-    current = next((p.price for p in _current_prices(db, item.sku_id) if p.currency == currency), None)
+def _item_out(
+    db: Session, item: QuoteItem, currency: str,
+    sku_map: dict | None = None, prices_map: dict | None = None,
+) -> QuoteItemOut:
+    # 批量场景由调用方预取 Sku 与现价(消 N+1)；单条场景回落到逐条查
+    sku = sku_map.get(item.sku_id) if sku_map is not None else db.get(Sku, item.sku_id)
+    cps = prices_map.get(item.sku_id, []) if prices_map is not None else _current_prices(db, item.sku_id)
+    current = next((p.price for p in cps if p.currency == currency), None)
     return QuoteItemOut(
         id=item.id, sku_id=item.sku_id,
         sku_code=sku.sku_code if sku else "", sku_name=sku.name if sku else "",
@@ -45,8 +50,10 @@ def _item_out(db: Session, item: QuoteItem, currency: str) -> QuoteItemOut:
     )
 
 
-def _quote_out(db: Session, quote: Quote) -> QuoteOut:
-    items = [_item_out(db, i, quote.currency) for i in quote.items]
+def _quote_out(
+    db: Session, quote: Quote, sku_map: dict | None = None, prices_map: dict | None = None,
+) -> QuoteOut:
+    items = [_item_out(db, i, quote.currency, sku_map, prices_map) for i in quote.items]
     return QuoteOut(
         id=quote.id, quote_no=quote.quote_no, customer_name=quote.customer_name,
         customer_contact=quote.customer_contact, currency=quote.currency,
@@ -78,11 +85,16 @@ def list_quotes(
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_current_user),
 ):
-    stmt = select(Quote).order_by(Quote.id.desc()).limit(100)
+    stmt = select(Quote).options(selectinload(Quote.items)).order_by(Quote.id.desc()).limit(100)
     # 非管理员强制只看自己的单：mine=false 不得用于越权浏览他人报价
     if mine or user.role != "admin":
         stmt = stmt.where(Quote.created_by == user.id)
-    return [_quote_out(db, q) for q in db.execute(stmt).scalars().all()]
+    quotes = db.execute(stmt).scalars().all()
+    # 一次性预取本页所有明细的 Sku 与现价，消除逐单逐行的 db.get + _current_prices N+1
+    ids = list({it.sku_id for q in quotes for it in q.items})
+    sku_map = {s.id: s for s in db.execute(select(Sku).where(Sku.id.in_(ids))).scalars()} if ids else {}
+    prices_map = current_prices_batch(db, ids)
+    return [_quote_out(db, q, sku_map, prices_map) for q in quotes]
 
 
 @router.post("", response_model=QuoteOut, status_code=201)

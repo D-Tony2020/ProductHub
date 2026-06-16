@@ -4,7 +4,7 @@
 """
 from datetime import date
 
-from sqlalchemy import select
+from sqlalchemy import update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -21,16 +21,18 @@ _FORMATS = {
 def next_code(db: Session, kind: str) -> str:
     prefix, width = _FORMATS[kind]
     year = date.today().year
-    # 不存在则建行（幂等），随后行锁递增
+    # 不存在则建行（幂等）
     db.execute(
         pg_insert(CodeCounter)
         .values(kind=kind, year=year, value=0)
         .on_conflict_do_nothing(index_elements=["kind", "year"])
     )
-    counter = db.execute(
-        select(CodeCounter)
+    # 原子自增并取回新值：一条 UPDATE...RETURNING 完成"读-改-写"，
+    # 取代 SELECT FOR UPDATE + Python +1 的三步，临界区收窄、无读改写竞态窗口。
+    val = db.execute(
+        update(CodeCounter)
         .where(CodeCounter.kind == kind, CodeCounter.year == year)
-        .with_for_update()
+        .values(value=CodeCounter.value + 1)
+        .returning(CodeCounter.value)
     ).scalar_one()
-    counter.value += 1
-    return f"{prefix}-{year}-{counter.value:0{width}d}"
+    return f"{prefix}-{year}-{val:0{width}d}"

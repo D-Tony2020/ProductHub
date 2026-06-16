@@ -336,6 +336,29 @@ def _current_prices(db: Session, sku_id: int) -> list[CurrentPrice]:
     ]
 
 
+def current_prices_batch(db: Session, sku_ids: list[int]) -> dict[int, list[CurrentPrice]]:
+    """批量版 _current_prices：一次 IN 取多 SKU 现价，按 sku_id 分组。口径与 _current_prices 完全一致。
+    供列表/导出/报价单等批量场景消除逐 SKU N+1。"""
+    if not sku_ids:
+        return {}
+    today = date.today()
+    rows = db.execute(
+        select(SkuPrice)
+        .where(
+            SkuPrice.sku_id.in_(sku_ids),
+            SkuPrice.superseded_at.is_(None),
+            SkuPrice.valid_from <= today,
+            (SkuPrice.valid_to.is_(None)) | (SkuPrice.valid_to >= today),
+        )
+        .order_by(SkuPrice.currency)
+    ).scalars()
+    out: dict[int, list[CurrentPrice]] = {}
+    for r in rows:
+        out.setdefault(r.sku_id, []).append(
+            CurrentPrice(price=r.price, currency=r.currency, valid_from=r.valid_from.isoformat()))
+    return out
+
+
 def matched_sku_payload(db: Session, sku: Sku) -> MatchedSku:
     return MatchedSku(
         id=sku.id,
