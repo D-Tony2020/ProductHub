@@ -8,14 +8,14 @@ class QuoteIn(BaseModel):
     customer_contact: str | None = Field(default=None, max_length=200)
     currency: str | None = Field(default=None, pattern=r"^[A-Z]{3}$")
     valid_until: str | None = None
-    notes: str | None = None
+    notes: str | None = Field(default=None, max_length=2000)
 
 
 class QuoteUpdate(BaseModel):
     customer_name: str | None = Field(default=None, max_length=200)
     customer_contact: str | None = Field(default=None, max_length=200)
     valid_until: str | None = None
-    notes: str | None = None
+    notes: str | None = Field(default=None, max_length=2000)
 
 
 class QuoteItemIn(BaseModel):

@@ -9,7 +9,8 @@ class Settings(BaseSettings):
         env_prefix="PRODUCTHUB_", env_file=".env", env_file_encoding="utf-8", extra="ignore"
     )
 
-    database_url: str = "postgresql+psycopg://producthub:producthub_dev@127.0.0.1:5440/producthub"
+    # 必填、无默认：连接串(含口令)绝不在代码留明文默认。dev 见 backend/.env、测试见 conftest、生产由环境注入
+    database_url: str
     # JWT 密钥：必填、代码内零默认值（缺失即启动失败），≥32 字节。生产由环境/密钥管理注入，
     # dev 见 backend/.env、测试见 conftest。绝不在代码留可用默认值——否则任何人凭公开默认串即可
     # 离线伪造管理员令牌、绕过登录直踩"数据库绝不能数据混乱"红线。

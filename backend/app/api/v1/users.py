@@ -49,6 +49,12 @@ def update_user(
 ):
     user = get_or_404(db, AppUser, user_id)
     data = body.model_dump(exclude_unset=True)
+    # 防自锁：管理员不得把自己降级或停用，否则系统可能永久失去管理员而无人能恢复
+    if admin.id == user_id:
+        if data.get("role") not in (None, "admin"):
+            raise HTTPException(400, "不能修改自己的管理员角色，请由另一名管理员操作")
+        if data.get("is_active") is False:
+            raise HTTPException(400, "不能停用自己的账号")
     before = {}
     if "password" in data:
         password = data.pop("password")

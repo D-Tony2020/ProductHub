@@ -32,6 +32,14 @@ from app.services.template_service import get_or_404
 router = APIRouter(prefix="/quotes", tags=["quotes"])
 
 
+def _csv_safe(v):
+    """防 CSV/公式注入：以 = + - @ 或制表/回车开头的文本单元格加前导单引号，
+    使 Excel/WPS 按文本而非公式解析(客户名/备注等用户输入直写单元格的越权面)。"""
+    if isinstance(v, str) and v and v[0] in "=+-@\t\r":
+        return "'" + v
+    return v
+
+
 def _item_out(
     db: Session, item: QuoteItem, currency: str,
     sku_map: dict | None = None, prices_map: dict | None = None,
@@ -324,7 +332,7 @@ def export_excel(
     ws["A1"].alignment = Alignment(horizontal="center")
     ws.append([])
     ws.append(["报价单号", quote.quote_no, "", "日期", datetime.now().strftime("%Y-%m-%d")])
-    ws.append(["客户", quote.customer_name, "", "币种", quote.currency])
+    ws.append(["客户", _csv_safe(quote.customer_name), "", "币种", quote.currency])
     if quote.valid_until:
         ws.append(["有效期至", quote.valid_until.isoformat()])
     ws.append([])
@@ -337,14 +345,14 @@ def export_excel(
         sku = db.get(Sku, item.sku_id)
         line_total = item.unit_price * item.qty
         total += line_total
-        ws.append([idx, sku.sku_code if sku else "", sku.name if sku else "",
+        ws.append([idx, sku.sku_code if sku else "", _csv_safe(sku.name if sku else ""),
                    item.qty, float(item.unit_price), float(line_total)])
     ws.append(["", "", "", "", "合计", float(total)])
     ws[ws.max_row][4].font = Font(bold=True)
     ws[ws.max_row][5].font = Font(bold=True)
     if quote.notes:
         ws.append([])
-        ws.append(["备注", quote.notes])
+        ws.append(["备注", _csv_safe(quote.notes)])
     widths = [6, 18, 50, 8, 14, 14]
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[chr(64 + i)].width = w
