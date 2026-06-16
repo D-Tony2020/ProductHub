@@ -60,6 +60,12 @@ function addDisabledReason(s: any): string | null {
   return null
 }
 
+/** 货架展示序：在售优先，已作废(非 active)灰显并沉到末尾。
+ *  纯前端视觉排序——sort 稳定，同组内保留服务端原序，绝不改动任何数据。 */
+const displayRows = computed(() =>
+  [...rows.value].sort((a, b) =>
+    (a.status === 'active' ? 0 : 1) - (b.status === 'active' ? 0 : 1)))
+
 const drawer = reactive({ visible: false, sku: null as any, prices: [] as any[] })
 const bomCollapsed = reactive(new Set<string>())  // 产品构成树折叠态（节点路径）
 
@@ -368,9 +374,6 @@ function priceRange(t: any): string | null {
       <el-radio-button value="shelf"><el-icon><List /></el-icon> SKU 货架</el-radio-button>
       <el-radio-button value="overview"><el-icon><Grid /></el-icon> 产品全貌</el-radio-button>
     </el-radio-group>
-    <span class="toggle-hint">{{ homeView === 'shelf'
-      ? '业务员日常：找货 / 查价 / 加报价单'
-      : '公司有哪些产品（按品类聚合，比 SKU 粗一档）' }}</span>
     <span style="flex: 1"></span>
     <el-button type="primary" @click="router.push('/configure')">+ 新配置</el-button>
   </div>
@@ -461,8 +464,8 @@ function priceRange(t: any): string | null {
         <!-- 卡片视图 -->
         <div v-if="viewMode === 'card'" v-loading="loading">
           <div v-if="rows.length" class="card-grid">
-            <el-card v-for="row in rows" :key="row.id" shadow="hover" body-style="padding: 10px"
-                     class="sku-card" @click="openDetailById(row.id)">
+            <el-card v-for="row in displayRows" :key="row.id" shadow="hover" body-style="padding: 10px"
+                     class="sku-card" :class="{ retired: row.status !== 'active' }" @click="openDetailById(row.id)">
               <div class="sku-thumb"><el-icon :size="26"><Goods /></el-icon></div>
               <div class="sku-code">{{ row.sku_code }}</div>
               <div class="sku-name">{{ row.name }}</div>
@@ -501,7 +504,9 @@ function priceRange(t: any): string | null {
         </div>
 
         <!-- 表格视图 -->
-        <el-table v-else :data="rows" v-loading="loading" @row-click="(r: any) => openDetailById(r.id)">
+        <el-table v-else :data="displayRows" v-loading="loading"
+                  :row-class-name="({ row }: any) => row.status !== 'active' ? 'row-retired' : ''"
+                  @row-click="(r: any) => openDetailById(r.id)">
           <el-table-column prop="sku_code" label="SKU 编码" width="150" />
           <el-table-column prop="name" label="名称 / 规格摘要" min-width="260" />
           <el-table-column label="现价" width="120">
@@ -589,10 +594,6 @@ function priceRange(t: any): string | null {
         </el-card>
       </div>
     </template>
-    <p class="ov-foot">
-      点任一品类卡 → 下钻到该品类的 SKU 货架。产品全貌只读，看"公司有哪些产品"；
-      改产品类型结构请到「系统设置 · 产品模板」。
-    </p>
   </template>
 
   <el-drawer v-model="drawer.visible" size="560px" direction="rtl" class="sku-drawer">
@@ -609,7 +610,7 @@ function priceRange(t: any): string | null {
 
     <template v-if="drawer.sku">
       <!-- 决策层（sticky 钉顶）：3 秒看懂 是什么货 / 多少钱 / 能不能卖 -->
-      <div class="decide">
+      <div class="decide ph-fade">
         <div class="decide-name">
           {{ drawer.sku.name }}
           <el-tag size="small" effect="plain" :type="isDirectAssembly ? 'warning' : 'info'">
@@ -820,7 +821,13 @@ function priceRange(t: any): string | null {
   grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
   gap: 12px;
 }
-.sku-card { cursor: pointer; }
+.sku-card {
+  cursor: pointer;
+  transition: transform var(--ph-duration-fast) var(--ph-ease),
+    box-shadow var(--ph-duration-fast) var(--ph-ease),
+    border-color var(--ph-duration-fast) var(--ph-ease);
+}
+.sku-card:hover { transform: translateY(-2px); border-color: var(--el-color-primary); }
 .sku-thumb {
   height: 60px; display: flex; align-items: center; justify-content: center;
   background: var(--el-fill-color-light); border-radius: 6px; color: var(--el-text-color-secondary);
@@ -833,7 +840,14 @@ function priceRange(t: any): string | null {
 }
 .sku-foot { display: flex; align-items: center; gap: 6px; min-height: 24px; }
 .sku-foot .price { color: var(--el-color-success); font-size: 16px; font-variant-numeric: tabular-nums; }
-.sku-actions { display: flex; gap: 4px; margin-top: 8px; }
+/* align-items:center 让裸按钮与被 tooltip<span>包裹的「加入报价单」同基线对齐；
+   span 设 inline-flex 否则其内按钮按文字基线下沉，与「改价」上下错位 */
+.sku-actions { display: flex; align-items: center; gap: 4px; margin-top: 8px; }
+.sku-actions > span { display: inline-flex; }
+/* 已作废 SKU：去饱和灰显（沉底由 displayRows 排序保证），仍可点开查看 */
+.sku-card.retired { opacity: 0.6; filter: grayscale(0.5); }
+/* 作废卡不参与悬停抬升/变色，避免"诱导交互"——特异性 0,2,1 稳压 .sku-card:hover(0,2,0) */
+.sku-card.retired:hover { transform: none; border-color: var(--el-border-color); box-shadow: none; }
 
 .price-thumb {
   width: 80px; height: 80px; flex-shrink: 0;
@@ -883,15 +897,18 @@ function priceRange(t: any): string | null {
 .src-arrow { margin: 0 4px; color: var(--ph-gray-400); vertical-align: -2px; }
 .src-warn { color: var(--el-color-danger); font-size: 12px; }
 
-.sku-actions { display: flex; gap: 8px; }
-
 /* 产品库视图切换 + 产品全貌 */
 .home-toggle { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
-.toggle-hint { font-size: 12px; color: var(--el-text-color-secondary); }
 .ov-band { grid-template-columns: repeat(4, 1fr); }
 .ov-group { font-weight: 500; font-size: 14px; margin: 14px 0 8px; color: var(--el-text-color-primary); }
 .ov-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
-.ov-card { cursor: pointer; transition: border-color .15s; }
+.ov-card {
+  cursor: pointer;
+  transition: transform var(--ph-duration-fast) var(--ph-ease),
+    box-shadow var(--ph-duration-fast) var(--ph-ease),
+    border-color var(--ph-duration-fast) var(--ph-ease);
+}
+.ov-card:hover { transform: translateY(-2px); border-color: var(--el-color-primary); box-shadow: var(--ph-shadow-md); }
 .ov-card.empty { opacity: 0.6; }
 .ov-name { font-size: 15px; font-weight: 500; }
 .ov-count { margin: 6px 0 8px; }
@@ -905,5 +922,6 @@ function priceRange(t: any): string | null {
 .ov-dims { font-size: 11px; color: var(--el-text-color-secondary); margin-top: 8px;
   border-top: 0.5px solid var(--el-border-color-lighter); padding-top: 8px; }
 .ov-unmodeled { color: var(--el-color-warning); }
-.ov-foot { font-size: 12px; color: var(--el-text-color-secondary); margin-top: 14px; }
+/* 表格视图：已作废行灰显（沉底由 displayRows 排序保证） */
+:deep(.row-retired) { color: var(--el-text-color-secondary); opacity: 0.7; }
 </style>

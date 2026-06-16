@@ -50,7 +50,8 @@ const specNote = ref('')
 onMounted(async () => {
   try {
     clearTypeCache()  // 进入配置看板先清缓存，确保模板最新（必选/部件槽变更立即生效）
-    const { data } = await api.get('/template/node-types')
+    // include_inactive：已停用品类也取回，但在起点只灰显沉底（见 startCards），不主动诱导新建
+    const { data } = await api.get('/template/node-types', { params: { include_inactive: true } })
     // 凡可售根均可作配置起点：整机品类 + 单卖配件（如客户单卖筒体/阀门）
     rootTypes.value = data.filter((t: any) => t.is_sellable_root)
     drafts.value = (await api.get('/config-drafts')).data
@@ -83,6 +84,48 @@ async function startNew(t: any) {
   draftId.value = null
   editingSkuId.value = null
   partSpecId.value = null
+}
+
+// ---------- 起点品类卡：组内自由拖拽排序（仅本机记忆 localStorage，零数据库改动）+ 停用项灰显沉底 ----------
+const START_GROUPS = [
+  { key: 'product', label: '整机' },
+  { key: 'part', label: '配件单卖' },
+] as const
+const ORDER_KEY = 'cfg_start_order'  // { product:number[], part:number[] }，仅记活跃项的偏好序
+const startOrder = ref<Record<string, number[]>>((() => {
+  try { return JSON.parse(localStorage.getItem(ORDER_KEY) || '{}') } catch { return {} }
+})())
+function persistOrder() { localStorage.setItem(ORDER_KEY, JSON.stringify(startOrder.value)) }
+
+/** 某组展示序：活跃项按本机偏好序（未记录者保留模板序排其后），停用项一律沉到末尾。 */
+function startCards(groupKey: string) {
+  const items = rootTypes.value.filter((t: any) => t.kind === groupKey)
+  const saved = startOrder.value[groupKey] ?? []
+  const rank = (t: any) => {
+    const i = saved.indexOf(t.id)
+    return i === -1 ? saved.length + items.indexOf(t) : i
+  }
+  const active = items.filter((t: any) => t.is_active !== false).sort((a: any, b: any) => rank(a) - rank(b))
+  const inactive = items.filter((t: any) => t.is_active === false)
+  return [...active, ...inactive]
+}
+
+const cardDrag = reactive({ group: '', id: 0 })
+function onCardDragStart(groupKey: string, id: number) {
+  cardDrag.group = groupKey
+  cardDrag.id = id
+}
+function onCardDrop(groupKey: string, targetId: number) {
+  const fromId = cardDrag.id, fromGroup = cardDrag.group
+  cardDrag.id = 0
+  if (fromGroup !== groupKey || !fromId || fromId === targetId) return
+  // 仅在活跃项之间重排；停用项不参与拖拽、始终沉底
+  const ids = startCards(groupKey).filter((t: any) => t.is_active !== false).map((t: any) => t.id)
+  const from = ids.indexOf(fromId), to = ids.indexOf(targetId)
+  if (from < 0 || to < 0) return
+  ids.splice(to, 0, ids.splice(from, 1)[0])
+  startOrder.value = { ...startOrder.value, [groupKey]: ids }
+  persistOrder()
 }
 
 // ---------- 整机直采（黑盒整机）----------
@@ -538,25 +581,32 @@ const serverComplete = computed(() => result.value?.complete === true)
   <!-- 起点：选品类 / 续草稿 -->
   <div v-if="!rootState && !direct.active">
     <h3>开始一次配置</h3>
-    <template v-for="group in [
-      { label: '整机', items: rootTypes.filter((t: any) => t.kind === 'product') },
-      { label: '配件单卖', items: rootTypes.filter((t: any) => t.kind === 'part') },
-    ]" :key="group.label">
-      <template v-if="group.items.length">
+    <template v-for="group in START_GROUPS" :key="group.key">
+      <template v-if="startCards(group.key).length">
         <el-divider content-position="left">{{ group.label }}</el-divider>
-        <el-row :gutter="16">
-          <el-col v-for="t in group.items" :key="t.id" :span="6" style="margin-bottom: 12px">
-            <el-card shadow="hover" :body-style="{ padding: '14px' }">
-              <b>{{ t.name }}</b>
-              <div style="color: var(--el-text-color-secondary); font-size: 12px; margin-bottom: 10px">{{ t.code }}</div>
-              <div v-if="group.label === '整机'" style="display: flex; gap: 6px">
-                <el-button size="small" type="primary" plain style="flex: 1" @click="startNew(t)">逐项配置</el-button>
-                <el-button size="small" style="flex: 1" @click="startDirect(t)">整机直采</el-button>
-              </div>
-              <el-button v-else size="small" type="primary" plain style="width: 100%" @click="startNew(t)">开始配置</el-button>
-            </el-card>
-          </el-col>
-        </el-row>
+        <div class="cfg-grid">
+          <el-card
+            v-for="t in startCards(group.key)" :key="t.id"
+            class="cfg-card" :class="{ inactive: t.is_active === false, dragging: cardDrag.id === t.id }"
+            shadow="hover" :body-style="{ padding: '14px' }"
+            :draggable="t.is_active !== false"
+            @dragstart="onCardDragStart(group.key, t.id)"
+            @dragover.prevent
+            @drop.prevent="onCardDrop(group.key, t.id)"
+            @dragend="cardDrag.id = 0"
+          >
+            <div class="cfg-card-head">
+              <span v-if="t.is_active !== false" class="drag-handle" title="拖动排序（组内·仅本机记忆）">⠿</span>
+              <b class="cfg-card-name">{{ t.name }}</b>
+              <el-tag v-if="t.is_active === false" size="small" type="info">已停用</el-tag>
+            </div>
+            <div v-if="group.key === 'product'" class="cfg-card-acts">
+              <el-button size="small" type="primary" plain style="flex: 1" :disabled="t.is_active === false" @click="startNew(t)">逐项配置</el-button>
+              <el-button size="small" style="flex: 1" :disabled="t.is_active === false" @click="startDirect(t)">整机直采</el-button>
+            </div>
+            <el-button v-else size="small" type="primary" plain style="width: 100%" :disabled="t.is_active === false" @click="startNew(t)">开始配置</el-button>
+          </el-card>
+        </div>
       </template>
     </template>
     <template v-if="drafts.length">
@@ -908,4 +958,33 @@ const serverComplete = computed(() => result.value?.complete === true)
   background: var(--el-bg-color);
   padding-bottom: 4px;
 }
+
+/* 起点品类卡：与「产品全貌」一致的卡片墙 + token 抬升动效；可组内拖拽，停用项灰显沉底 */
+.cfg-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+  margin-bottom: 4px;
+}
+.cfg-card {
+  transition: transform var(--ph-duration-fast) var(--ph-ease),
+    box-shadow var(--ph-duration-fast) var(--ph-ease),
+    border-color var(--ph-duration-fast) var(--ph-ease);
+}
+.cfg-card:not(.inactive):hover {
+  transform: translateY(-2px);
+  border-color: var(--el-color-primary);
+  box-shadow: var(--ph-shadow-md);
+}
+.cfg-card.dragging { opacity: 0.4; border: 1px dashed var(--el-color-primary); }
+/* 停用品类：去饱和灰显、沉到组末，不诱导新建（按钮已 disabled） */
+.cfg-card.inactive { opacity: 0.55; filter: grayscale(0.6); }
+.cfg-card-head { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; }
+.cfg-card-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cfg-card-acts { display: flex; gap: 6px; }
+.drag-handle {
+  cursor: grab; color: var(--el-text-color-placeholder); font-size: 12px;
+  line-height: 1; user-select: none; flex-shrink: 0;
+}
+.drag-handle:active { cursor: grabbing; }
 </style>

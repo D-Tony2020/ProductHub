@@ -1,7 +1,9 @@
 <script setup lang="ts">
 /** 统一指标卡（设计系统组件）：收编全站原本各写一遍的「数字+标签」卡。
  *  纯展示，仅 props + 一个 click 事件。详见 frontend/DESIGN.md。 */
-defineProps<{
+import { computed } from 'vue'
+
+const props = defineProps<{
   label: string
   value: string | number
   tone?: 'default' | 'brand' | 'success' | 'warning' | 'danger' | 'info'
@@ -12,6 +14,21 @@ defineProps<{
   alert?: boolean  // true=告警态(染浅底+前景色，用于待录价/待治理)；默认仅左色条+白底
 }>()
 const emit = defineEmits<{ (e: 'click'): void }>()
+
+/** 大数估算紧凑显示，避免卡内溢出：≥1万→w、≥1千→k（保留一位、去尾零），<1千原样。
+ *  精确值挂在 title 上，悬停可见。非数字（如"可否报价"文案）原样透传。 */
+const display = computed(() => {
+  const v = props.value
+  if (typeof v !== 'number' || !Number.isFinite(v)) return v
+  const sign = v < 0 ? '-' : ''
+  const a = Math.abs(v)
+  const trim = (x: number) => { const s = x.toFixed(1); return s.endsWith('.0') ? s.slice(0, -2) : s }
+  if (a >= 10000) return `${sign}${trim(a / 10000)}w`
+  if (a >= 1000) return `${sign}${trim(a / 1000)}k`
+  return String(v)
+})
+const exact = computed(() =>
+  typeof props.value === 'number' ? props.value.toLocaleString('en-US') : undefined)
 </script>
 
 <template>
@@ -22,7 +39,7 @@ const emit = defineEmits<{ (e: 'click'): void }>()
     @keydown.enter.prevent="clickable && emit('click')"
   >
     <div class="ph-stat-label">{{ label }}<span v-if="hint" class="ph-stat-hint"> · {{ hint }}</span></div>
-    <div class="ph-stat-value ph-num">{{ value }}<span v-if="unit" class="ph-stat-unit">{{ unit }}</span></div>
+    <div class="ph-stat-value ph-num" :title="exact">{{ display }}<span v-if="unit" class="ph-stat-unit">{{ unit }}</span></div>
   </div>
 </template>
 

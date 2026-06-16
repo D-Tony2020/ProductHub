@@ -253,9 +253,10 @@ async function select(t: any, viaNav = false) {
     optionRows[a.id] = (await api.get(`/template/attributes/${a.id}/options`)).data
   }
   if (viaNav) {
-    if (navTrail.value[navTrail.value.length - 1]?.id !== t.id) {
-      navTrail.value.push({ id: t.id, name: data.name })
-    }
+    // 已在轨迹中（含来回穿行回到祖先）→ 截断回到该节点，绝不重复追加，避免面包屑无限嵌套累积
+    const at = navTrail.value.findIndex((n) => n.id === t.id)
+    if (at >= 0) navTrail.value = navTrail.value.slice(0, at + 1)
+    else navTrail.value.push({ id: t.id, name: data.name })
   } else {
     navTrail.value = [{ id: t.id, name: data.name }]  // 从左栏直选 = 新起点
   }
@@ -410,6 +411,7 @@ function typeName(id: number) {
         <el-input v-model="search" placeholder="搜索名称 / 编码" clearable size="small" style="margin-bottom: 8px">
           <template #prefix><el-icon><Search /></el-icon></template>
         </el-input>
+        <div class="type-list">
         <template v-for="g in GROUP_DEFS" :key="g.key">
           <div v-if="grouped[g.key].length" class="side-group">
             {{ g.label }} <span class="gcnt">{{ grouped[g.key].length }}</span>
@@ -425,7 +427,7 @@ function typeName(id: number) {
             @dragend="drag.idx = -1"
           >
             <span v-if="!search" class="drag-handle" title="拖动排序（组内）">⠿</span>
-            <span class="ti-name">{{ t.name }} <small style="color: var(--el-text-color-placeholder)">{{ t.code }}</small></span>
+            <span class="ti-name">{{ t.name }}</span>
             <span class="badges">
               <el-tag v-if="t.sku_count" size="small" type="success" effect="plain" title="在售 SKU 数">{{ t.sku_count }}</el-tag>
               <el-tag v-if="t.parent_count" size="small" type="warning" effect="plain" title="被几个上级引用">↑{{ t.parent_count }}</el-tag>
@@ -435,6 +437,7 @@ function typeName(id: number) {
         </template>
         <el-empty v-if="!grouped.products.length && !grouped.sellableParts.length && !grouped.commonParts.length"
                   :image-size="50" description="无匹配" />
+        </div>
         <p style="font-size: 12px; color: var(--el-text-color-secondary); margin-top: 8px">
           搜索定位 · 组内拖拽排序（搜索时暂停）· 徽标：绿=在售SKU，橙↑=被几个上级引用
         </p>
@@ -445,7 +448,7 @@ function typeName(id: number) {
       <el-card v-if="selected">
         <template #header>
           <div style="display: flex; justify-content: space-between; align-items: center">
-            <span>{{ selected.name }}（{{ selected.code }}）</span>
+            <span>{{ selected.name }}</span>
             <span>
               <el-button size="small" @click="openEdit('type', selected)">编辑</el-button>
               <el-button size="small" :type="selected.is_active ? 'danger' : 'success'" plain
@@ -509,7 +512,7 @@ function typeName(id: number) {
         <el-collapse>
           <el-collapse-item v-for="a in selected.attributes" :key="a.id">
             <template #title>
-              {{ a.name }}（{{ a.code }}）
+              {{ a.name }}
               <el-tag v-if="a.is_required" size="small" style="margin-left: 6px">必选</el-tag>
               <el-tag v-if="a.is_filterable" size="small" type="success" style="margin-left: 4px">筛选项</el-tag>
               <el-tag v-if="!a.is_active" size="small" type="info" style="margin-left: 4px">已停用</el-tag>
@@ -705,7 +708,7 @@ function typeName(id: number) {
           >
             <el-option
               v-for="t in types.filter(t => t.is_active)" :key="t.id" :value="t.id"
-              :label="`${t.name}（${t.code}）`"
+              :label="t.name"
             />
           </el-select>
         </el-form-item>
@@ -775,6 +778,14 @@ function typeName(id: number) {
 </template>
 
 <style scoped>
+/* 节点列表过长 → 框内滚动（搜索/计数/说明常驻，列表区独立滚动） */
+.type-list {
+  max-height: calc(100vh - 300px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  margin: 0 -4px;
+  padding: 0 4px;
+}
 .type-item {
   padding: 7px 8px;
   border-radius: 6px;
