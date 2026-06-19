@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /** SKU 库（货架，默认首页）：统计带 + 品类树 + 卡片/表格双视图 + 详情抽屉。
  *  P1：统计与计数走聚合端点，检索复用 /skus，零数据层改动。 */
-import { CopyDocument, EditPen, Goods, Grid, List, Right, WarningFilled } from '@element-plus/icons-vue'
+import { CopyDocument, EditPen, Goods, Grid, List, Operation, Right, Search, Setting } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -9,11 +9,17 @@ import { useRoute, useRouter } from 'vue-router'
 import { api } from '../api/client'
 import BomTreeNode from '../components/BomTreeNode.vue'
 import PriceTrendChart from '../components/PriceTrendChart.vue'
+import SkuFilterPanel from '../components/SkuFilterPanel.vue'
+import SkuSortBar from '../components/SkuSortBar.vue'
+import StructuredSearchDrawer from '../components/StructuredSearchDrawer.vue'
 import StatCard from '../components/StatCard.vue'
+import { resolveFacets, SOURCING_OPTIONS } from '../constants/facets'
 import { useAuthStore } from '../stores/auth'
+import { usePreferencesStore } from '../stores/preferences'
 import { useQuoteCartStore } from '../stores/quoteCart'
 
 const auth = useAuthStore()
+const pref = usePreferencesStore()
 const cart = useQuoteCartStore()
 const router = useRouter()
 const route = useRoute()
@@ -22,25 +28,135 @@ const filters = reactive({
   q: '', root_type_id: null as number | null, status: null as string | null,
   option_id: [] as number[], purchased_part_id: null as number | null,
   supplier_id: null as number | null, mine: false,
+  supplier_part_type_id: null as number | null,  // 供应商×件类型下钻（仅配合 supplier_id）
+  // 结构化检索·多对来源："该件类型由该供应商供应"，可任意多对并立，各自 AND（→ /skus sp_pair[]）
+  supplier_pairs: [] as Array<{ supplier_id: number; node_type_id: number }>,
+  sourcing: [] as string[], price_min: null as number | null,
+  price_max: null as number | null, quotable: false,
 })
+const supplierPartTypeName = ref('')  // 件类型 chip 展示名（点击下钻时带入）
 const stats = ref({ active: 0, pending_price: 0, new_this_week: 0, stale_30d: 0, incomplete: 0 })
 const suppliers = ref<any[]>([])
 const tree = ref<{ products: any[]; parts: any[] }>({ products: [], parts: [] })
+const allTypes = ref<any[]>([])  // 全量 node-types（含非根子部件），供 sp_pair chip 件类型名解析
 const filterAttrs = ref<any[]>([])
 const rows = ref<any[]>([])
 const total = ref(0)
 const page = ref(1)
 const loading = ref(false)
-const viewMode = ref<'card' | 'table'>(
-  (localStorage.getItem('sku_view_mode') as 'card' | 'table') || 'card',
-)
-watch(viewMode, (v) => localStorage.setItem('sku_view_mode', v))
+let ready = false  // 首屏注水期间抑制各筛选 watcher 重复 load / 回写 URL
+let applyingBatch = false  // 结构化检索批量套用期间抑制各 watcher（避免清 option_id / 重复 load）
+const structuredSearchVisible = ref(false)  // 「按配置找货」抽屉
+// 视图与每页条数取自 per-user 偏好（通用设置可改）；computed 自动跟随偏好注水，切换即存偏好
+const viewMode = computed<'card' | 'table'>({
+  get: () => pref.view,
+  set: (v) => pref.set({ default_view: v }),
+})
+// 排序 / 币种：会话态本地真源，初值取 URL ?? 偏好；用户改动既驱动当前结果又持久化为默认。
+// 偏好异步注水时若用户未在 URL 指定且未手改，则跟随注水回填（touched 闸防覆盖用户选择）。
+const sort = ref<string>((route.query.sort as string) || pref.sort)
+const currency = ref<string>((route.query.ccy as string) || pref.currency)
+let sortTouched = !!route.query.sort
+let ccyTouched = !!route.query.ccy
+watch(() => pref.sort, (v) => { if (!sortTouched) sort.value = v })
+watch(() => pref.currency, (v) => { if (!ccyTouched) currency.value = v })
+function onSort(v: string) { sortTouched = true; sort.value = v; pref.set({ default_sort: v }) }
+function onCurrency(v: string) { ccyTouched = true; currency.value = v; pref.set({ default_currency: v }) }
+// 分面顺序/显隐：合并出厂默认与 per-user 偏好（通用设置可拖拽配置）
+const facets = computed(() => resolveFacets(pref.productFacets))
+
+// 结构化检索带入的选项标签（含嵌套部件属性，filterAttrs 里没有，故单独缓存供 chip 显示）
+const structuredOptLabels = ref<Record<number, string>>({})
+// ---- 生效筛选 chips（可逐个移除 / 清空），与左栏分面、SortBar 三处同一真源 ----
+function optionLabel(oid: number): string {
+  if (structuredOptLabels.value[oid]) return structuredOptLabels.value[oid]
+  for (const a of filterAttrs.value) {
+    const o = a.options?.find((x: any) => x.id === oid)
+    if (o) return `${a.name}: ${o.label}`
+  }
+  return `规格 #${oid}`
+}
+/** sp_pair chip 文案："件类型 ← 供应商"；名称从全量 node-types/suppliers 反查（URL 回灌也能解析）。 */
+function pairLabel(p: { supplier_id: number; node_type_id: number }): string {
+  const pt = allTypes.value.find((t) => t.id === p.node_type_id)?.name ?? `件类型#${p.node_type_id}`
+  const sp = suppliers.value.find((s) => s.id === p.supplier_id)?.name ?? `#${p.supplier_id}`
+  return `${pt} ← ${sp}`
+}
+const activeChips = computed(() => {
+  const c: { key: string; text: string }[] = []
+  if (filters.q) c.push({ key: 'q', text: `搜索：${filters.q}` })
+  if (filters.root_type_id) {
+    const name = [...tree.value.products, ...tree.value.parts]
+      .find((t) => t.id === filters.root_type_id)?.name
+    c.push({ key: 'cat', text: `品类：${name ?? filters.root_type_id}` })
+  }
+  const statusText: Record<string, string> = {
+    pending_price: '待录价', incomplete: '待治理', active: '在售', retired: '已作废',
+  }
+  if (filters.status) c.push({ key: 'status', text: statusText[filters.status] ?? filters.status })
+  if (filters.mine) c.push({ key: 'mine', text: '我创建的' })
+  if (filters.supplier_id) {
+    const name = suppliers.value.find((s) => s.id === filters.supplier_id)?.name
+    c.push({ key: 'supplier', text: `供应商：${name ?? filters.supplier_id}` })
+  }
+  if (filters.supplier_part_type_id) {
+    c.push({ key: 'supplier_part', text: `件类型：${supplierPartTypeName.value || filters.supplier_part_type_id}` })
+  }
+  for (const p of filters.supplier_pairs) {
+    c.push({ key: `sp:${p.supplier_id}:${p.node_type_id}`, text: pairLabel(p) })
+  }
+  for (const s of filters.sourcing) {
+    c.push({ key: `sourcing:${s}`, text: SOURCING_OPTIONS.find((o) => o.value === s)?.label ?? s })
+  }
+  if (filters.quotable) c.push({ key: 'quotable', text: '仅可报价' })
+  if (filters.price_min != null || filters.price_max != null) {
+    const lo = filters.price_min ?? ''
+    const hi = filters.price_max ?? ''
+    c.push({ key: 'price', text: `价格 ${lo}~${hi} ${currency.value}` })
+  }
+  for (const oid of filters.option_id) c.push({ key: `opt:${oid}`, text: optionLabel(oid) })
+  return c
+})
+function removeChip(key: string) {
+  if (key === 'q') filters.q = ''
+  else if (key === 'cat') filters.root_type_id = null
+  else if (key === 'status') filters.status = null
+  else if (key === 'mine') filters.mine = false
+  else if (key === 'supplier') { filters.supplier_id = null; filters.supplier_part_type_id = null }
+  else if (key === 'supplier_part') filters.supplier_part_type_id = null
+  else if (key === 'quotable') filters.quotable = false
+  else if (key === 'price') { filters.price_min = null; filters.price_max = null }
+  else if (key.startsWith('sourcing:')) {
+    filters.sourcing = filters.sourcing.filter((s) => s !== key.slice(9))
+  } else if (key.startsWith('sp:')) {
+    const [, sid, ntid] = key.split(':')
+    filters.supplier_pairs = filters.supplier_pairs.filter(
+      (p) => !(p.supplier_id === Number(sid) && p.node_type_id === Number(ntid)))
+  } else if (key.startsWith('opt:')) {
+    filters.option_id = filters.option_id.filter((o) => o !== Number(key.slice(4)))
+  }
+}
+function clearAllFilters() {
+  filters.q = ''
+  filters.root_type_id = null
+  filters.status = null
+  filters.supplier_id = null
+  filters.supplier_part_type_id = null
+  filters.mine = false
+  filters.quotable = false
+  filters.price_min = null
+  filters.price_max = null
+  filters.sourcing = []
+  filters.option_id = []
+  filters.supplier_pairs = []
+}
 
 const activeQuick = computed(() => {
   if (filters.mine) return 'mine'
   if (filters.status === 'pending_price') return 'pending'
   if (filters.status === 'incomplete') return 'incomplete'
-  if (!filters.root_type_id && !filters.status && !filters.q && !filters.option_id.length) return 'all'
+  if (!filters.root_type_id && !filters.supplier_id && !filters.status && !filters.q
+      && !filters.option_id.length) return 'all'
   return ''
 })
 
@@ -77,6 +193,7 @@ async function loadStats() {
 
 async function loadTree() {
   const { data } = await api.get('/template/node-types', { params: { with_counts: true } })
+  allTypes.value = data
   tree.value = {
     products: data.filter((t: any) => t.kind === 'product' && t.is_sellable_root),
     parts: data.filter((t: any) => t.kind === 'part' && t.is_sellable_root),
@@ -84,7 +201,8 @@ async function loadTree() {
 }
 
 async function loadSuppliers() {
-  try { suppliers.value = (await api.get('/suppliers')).data } catch { /* 忽略 */ }
+  // overview 带 linked_skus 计数：供「按供应商」视角的一级树显示关联在售 SKU 数
+  try { suppliers.value = (await api.get('/suppliers/overview')).data } catch { /* 忽略 */ }
 }
 
 async function load() {
@@ -98,8 +216,16 @@ async function load() {
         option_id: filters.option_id.length ? filters.option_id : undefined,
         purchased_part_id: filters.purchased_part_id ?? undefined,
         supplier_id: filters.supplier_id ?? undefined,
+        supplier_part_type_id: filters.supplier_part_type_id ?? undefined,
+        sp_pair: filters.supplier_pairs.length
+          ? filters.supplier_pairs.map((p) => `${p.supplier_id}:${p.node_type_id}`) : undefined,
         mine: filters.mine || undefined,
-        page: page.value, page_size: 20,
+        sourcing: filters.sourcing.length ? filters.sourcing : undefined,
+        price_min: filters.price_min ?? undefined,
+        price_max: filters.price_max ?? undefined,
+        quotable: filters.quotable || undefined,
+        sort: sort.value, currency: currency.value,
+        page: page.value, page_size: pref.pageSize,
       },
       paramsSerializer: { indexes: null },
     })
@@ -110,29 +236,122 @@ async function load() {
   }
 }
 
-onMounted(async () => {
-  try {
-    await Promise.all([loadStats(), loadTree(), loadSuppliers(), loadOverview(), load()])
-    if (route.query.sku_id) await openDetailById(Number(route.query.sku_id))
-  } catch { /* 401 由拦截器跳转登录 */ }
-})
+/** 把当前检索态序列化进 URL（仅写非默认值，保持链接简洁、可分享、可回退）。 */
+function buildQuery(): Record<string, string> {
+  const q: Record<string, string> = {}
+  if (filters.q) q.q = filters.q
+  if (filters.root_type_id) q.cat = String(filters.root_type_id)
+  if (filters.status) q.status = filters.status
+  if (filters.supplier_id) q.supplier = String(filters.supplier_id)
+  if (filters.supplier_part_type_id) q.sptype = String(filters.supplier_part_type_id)
+  if (filters.supplier_pairs.length) {
+    q.sp = filters.supplier_pairs.map((p) => `${p.supplier_id}:${p.node_type_id}`).join(',')
+  }
+  if (filters.mine) q.mine = '1'
+  if (filters.quotable) q.quotable = '1'
+  if (filters.price_min != null) q.pmin = String(filters.price_min)
+  if (filters.price_max != null) q.pmax = String(filters.price_max)
+  if (filters.sourcing.length) q.sourcing = filters.sourcing.join(',')
+  if (filters.option_id.length) q.opt = filters.option_id.join(',')
+  if (sort.value !== 'recent') q.sort = sort.value
+  if (currency.value !== 'USD') q.ccy = currency.value
+  if (page.value > 1) q.page = String(page.value)
+  return q
+}
 
-watch(() => filters.root_type_id, async (id) => {
-  filters.option_id = []
+/** 首屏从 URL 注水筛选态（在 watcher 启用前调用，故不会触发重复 load）。 */
+function readUrlIntoFilters() {
+  const qd = route.query
+  filters.q = (qd.q as string) || ''
+  filters.root_type_id = qd.cat ? Number(qd.cat) : null
+  filters.status = (qd.status as string) || null
+  filters.supplier_id = qd.supplier ? Number(qd.supplier) : null
+  filters.supplier_part_type_id = qd.sptype ? Number(qd.sptype) : null
+  filters.supplier_pairs = qd.sp
+    ? String(qd.sp).split(',').map((s) => {
+      const [a, b] = s.split(':')
+      return { supplier_id: Number(a), node_type_id: Number(b) }
+    }).filter((p) => !Number.isNaN(p.supplier_id) && !Number.isNaN(p.node_type_id) && p.supplier_id && p.node_type_id)
+    : []
+  filters.mine = qd.mine === '1'
+  filters.quotable = qd.quotable === '1'
+  filters.price_min = qd.pmin != null ? Number(qd.pmin) : null
+  filters.price_max = qd.pmax != null ? Number(qd.pmax) : null
+  filters.sourcing = qd.sourcing ? String(qd.sourcing).split(',').filter(Boolean) : []
+  filters.option_id = qd.opt
+    ? String(qd.opt).split(',').map(Number).filter((n) => !Number.isNaN(n)) : []
+  if (qd.page) page.value = Number(qd.page) || 1
+}
+
+async function loadFilterAttrs(id: number | null) {
   filterAttrs.value = []
   if (id) {
     const { data } = await api.get(`/template/node-types/${id}`)
     filterAttrs.value = data.attributes.filter((a: any) => a.is_filterable && a.is_active)
   }
+}
+
+onMounted(async () => {
+  readUrlIntoFilters()  // 先从 URL 注水（此时 ready=false，下方 watcher 不会重复触发 load）
+  try {
+    await Promise.all([loadStats(), loadTree(), loadSuppliers(), loadOverview()])
+    if (filters.root_type_id) await loadFilterAttrs(filters.root_type_id)
+    await load()
+    if (route.query.sku_id) await openDetailById(Number(route.query.sku_id))
+  } catch { /* 401 由拦截器跳转登录 */ }
+  ready = true
+})
+
+watch(() => filters.root_type_id, async (id) => {
+  if (!ready || applyingBatch) return
+  filters.option_id = []
+  await loadFilterAttrs(id)
   page.value = 1
   await load()
 })
 watch([() => filters.q, () => filters.status, () => filters.option_id, () => filters.mine,
-       () => filters.supplier_id], () => {
+       () => filters.supplier_id, () => filters.supplier_part_type_id, () => filters.supplier_pairs,
+       () => filters.sourcing,
+       () => filters.quotable, () => filters.price_min, () => filters.price_max], () => {
+  if (!ready || applyingBatch) return
   page.value = 1
   void load()
 }, { deep: true })
-watch(page, () => void load())
+watch([sort, currency], () => { if (!ready || applyingBatch) return; page.value = 1; void load() })
+watch(page, () => { if (ready && !applyingBatch) void load() })
+watch(() => pref.pageSize, () => { if (!ready) return; page.value = 1; void load() })
+// 检索态回写 URL（可分享/可回退）；首屏注水期不写
+watch([filters, sort, currency, page], () => {
+  if (!ready || applyingBatch) return
+  void router.replace({ query: buildQuery() }).catch(() => {})
+}, { deep: true })
+
+// 结构化检索：批量套用查询(复用现有 filter 字段，chips/load/URL 自动生效)。
+// applyingBatch 抑制各 watcher 期间手动 loadFilterAttrs + 单次 load + 回写 URL，避免清 option_id/多次 load。
+async function applyStructuredQuery(q: any) {
+  applyingBatch = true
+  filters.mine = false
+  filters.status = null
+  filters.sourcing = []
+  filters.price_min = null
+  filters.price_max = null
+  filters.quotable = false
+  filters.q = ''
+  filters.root_type_id = q.root_type_id ?? null
+  filters.option_id = (q.option_id ?? []).slice()
+  // 结构化检索走多对来源 sp_pair，清空"按供应商视角下钻"的单来源字段，避免双重约束
+  filters.supplier_id = null
+  filters.supplier_part_type_id = null
+  supplierPartTypeName.value = ''
+  filters.supplier_pairs = (q.supplier_pairs ?? []).map(
+    (p: any) => ({ supplier_id: p.supplier_id, node_type_id: p.node_type_id }))
+  structuredOptLabels.value = q.opt_labels ?? {}
+  await loadFilterAttrs(filters.root_type_id)
+  page.value = 1
+  applyingBatch = false
+  await load()
+  void router.replace({ query: buildQuery() }).catch(() => {})
+}
 
 // ---- 快捷视图 / 品类树 ----
 function selectQuick(kind: 'all' | 'pending' | 'mine' | 'incomplete') {
@@ -140,14 +359,49 @@ function selectQuick(kind: 'all' | 'pending' | 'mine' | 'incomplete') {
   filters.option_id = []
   filters.root_type_id = null
   filters.supplier_id = null
+  filters.supplier_part_type_id = null
+  supplierPartTypeName.value = ''
+  filters.supplier_pairs = []
+  filters.sourcing = []
+  filters.price_min = null
+  filters.price_max = null
+  filters.quotable = false
   filterAttrs.value = []
   filters.status = kind === 'pending' ? 'pending_price' : kind === 'incomplete' ? 'incomplete' : null
   filters.mine = kind === 'mine'
 }
 function selectCategory(id: number) {
+  // 按品类视角：纯品类筛选（清供应商维度），再点同品类取消
   filters.mine = false
   filters.status = null
+  filters.supplier_id = null
+  filters.supplier_part_type_id = null
+  supplierPartTypeName.value = ''
+  filters.supplier_pairs = []
   filters.root_type_id = filters.root_type_id === id ? null : id
+}
+// 按供应商视角=在售供应关系：点供应商=纯供应商筛选（清品类/件类型维度）；再点同供应商取消。
+// 强制在售口径(status=active)，使列表 total 与供应商节点的 linked_skus(在售) 计数对齐。
+function selectSupplier(id: number) {
+  filters.mine = false
+  filters.root_type_id = null
+  const same = filters.supplier_id === id && filters.supplier_part_type_id == null
+  filters.supplier_part_type_id = null
+  supplierPartTypeName.value = ''
+  filters.supplier_pairs = []
+  filters.supplier_id = same ? null : id
+  filters.status = same ? null : 'active'
+}
+// 供应商下钻件类型：供应商×件类型双维（仅命中"该件类型本身由该供应商供应"的在售 SKU），
+// 在售口径使 total 与「件目录」计数对齐（你要的"对上"）。
+function selectSupplierCategory(p: { supplierId: number; partTypeId: number; partTypeName: string }) {
+  filters.mine = false
+  filters.root_type_id = null
+  filters.supplier_pairs = []
+  filters.supplier_id = p.supplierId
+  filters.supplier_part_type_id = p.partTypeId
+  supplierPartTypeName.value = p.partTypeName
+  filters.status = 'active'
 }
 
 async function openDetailById(id: number) {
@@ -188,16 +442,6 @@ const bomStats = computed(() =>
   drawer.sku?.config_tree
     ? countBom(drawer.sku.config_tree, { total: 0, white: 0, black: 0 })
     : { total: 0, white: 0, black: 0 })
-
-const sourcingGrouped = computed(() => {
-  if (!drawer.sku?.config_tree) return { none: [] as any[], black: [] as any[], white: [] as any[] }
-  const rows = sourcingRows(drawer.sku.config_tree)
-  return {
-    none: rows.filter((r) => !r.supplier),
-    black: rows.filter((r) => r.supplier && r.black),
-    white: rows.filter((r) => r.supplier && !r.black),
-  }
-})
 
 function collectBomParents(node: any, path: string, acc: string[]) {
   if (node.children && node.children.length) {
@@ -297,7 +541,9 @@ function exportList() {
 
 function priceText(s: any) {
   if (!s.current_prices?.length) return null
-  const p = s.current_prices[0]
+  // 优先展示所选币种现价，与排序/筛选币种一致（否则同列会混入他币现价、视觉错序）；
+  // 该 SKU 无此币种价时回落到首条，仍优于显示"待录价"
+  const p = s.current_prices.find((x: any) => x.currency === currency.value) ?? s.current_prices[0]
   return `${p.currency} ${p.price}`
 }
 
@@ -320,22 +566,23 @@ function renderTreeText(node: any, depth = 0): string[] {
   return lines
 }
 
-// 来源地图：把配置树摊成 部件→供应商 行（黑盒派生、白盒标注、未标注=缺口）
-function sourcingRows(tree: any): { label: string; supplier: string | null; black: boolean }[] {
-  const rows: { label: string; supplier: string | null; black: boolean }[] = []
+// 来源地图：把配置树按构成顺序(DFS)摊成 部件→供应商 两列行；未标注=白盒自配/未指定来源。
+// 不分黑白盒组，顺序与产品构成一致（同一棵树的同序遍历）。
+function sourcingRows(tree: any): { label: string; supplier: string | null }[] {
+  const rows: { label: string; supplier: string | null }[] = []
   function walk(node: any, isRoot: boolean) {
-    const label = node.slot_name || node.node_type_name
     if (!isRoot) {
-      rows.push({ label, supplier: node.supplier_name ?? null, black: node.mode === 'purchased' })
+      rows.push({ label: node.slot_name || node.node_type_name, supplier: node.supplier_name ?? null })
     } else if (node.supplier_name) {
-      // 整机直采根=黑盒整机；白盒根带供应商标注=非黑盒
-      rows.push({ label: `${node.node_type_name}（整机）`, supplier: node.supplier_name, black: node.mode === 'purchased' })
+      rows.push({ label: `${node.node_type_name}（整机）`, supplier: node.supplier_name })
     }
     for (const c of node.children ?? []) walk(c, false)
   }
   walk(tree, true)
   return rows
 }
+const sourcingFlat = computed(() =>
+  drawer.sku?.config_tree ? sourcingRows(drawer.sku.config_tree) : [])
 
 // ---- 产品库首页视图：货架(默认·业务员日常主场) / 产品全貌(可切视角·偏好持久化) ----
 const homeView = ref<'shelf' | 'overview'>(
@@ -395,71 +642,43 @@ function priceRange(t: any): string | null {
   </div>
 
   <el-row :gutter="12">
-    <!-- 左栏：快捷视图 + 品类树 -->
-    <el-col :span="5">
-      <el-card body-style="padding: 12px">
-        <div class="side-title">快捷视图</div>
-        <div class="side-item" :class="{ active: activeQuick === 'all' }" @click="selectQuick('all')">
-          全部 SKU
-        </div>
-        <div class="side-item" :class="{ active: activeQuick === 'pending' }" @click="selectQuick('pending')">
-          待录价
-          <el-tag v-if="stats.pending_price" size="small" type="warning">{{ stats.pending_price }}</el-tag>
-        </div>
-        <div class="side-item" :class="{ active: activeQuick === 'incomplete' }" @click="selectQuick('incomplete')">
-          待治理
-          <el-tag v-if="stats.incomplete" size="small" type="danger">{{ stats.incomplete }}</el-tag>
-        </div>
-        <div class="side-item" :class="{ active: activeQuick === 'mine' }" @click="selectQuick('mine')">
-          我创建的
-        </div>
-
-        <div class="side-title" style="margin-top: 14px">品类</div>
-        <div class="side-group">整机</div>
-        <div v-for="t in tree.products" :key="t.id" class="side-item indent"
-             :class="{ active: filters.root_type_id === t.id }" @click="selectCategory(t.id)">
-          <span>{{ t.name }}</span>
-          <span class="cnt">{{ t.sku_count ?? 0 }}</span>
-        </div>
-        <template v-if="tree.parts.length">
-          <div class="side-group">配件单卖</div>
-          <div v-for="t in tree.parts" :key="t.id" class="side-item indent"
-               :class="{ active: filters.root_type_id === t.id }" @click="selectCategory(t.id)">
-            <span>{{ t.name }}</span>
-            <span class="cnt">{{ t.sku_count ?? 0 }}</span>
-          </div>
-        </template>
-      </el-card>
+    <!-- 左栏：分面检索面板（快捷视图 + 品类树 + 可自定义分面） -->
+    <el-col :span="6">
+      <SkuFilterPanel
+        :filters="filters" :stats="stats" :tree="tree" :suppliers="suppliers"
+        :filter-attrs="filterAttrs" :facets="facets" :active-quick="activeQuick" :currency="currency"
+        @quick="selectQuick" @category="selectCategory"
+        @supplier="selectSupplier" @supplier-category="selectSupplierCategory"
+        @open-settings="router.push('/settings/general')"
+      />
     </el-col>
 
     <!-- 主区 -->
-    <el-col :span="19">
+    <el-col :span="18">
       <el-card>
-        <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 12px">
-          <el-select
-            v-for="a in filterAttrs" :key="a.id" v-model="filters.option_id" multiple collapse-tags
-            :placeholder="a.name" style="width: 160px"
-          >
-            <el-option
-              v-for="o in a.options.filter((o: any) => o.is_active)" :key="o.id"
-              :value="o.id" :label="`${a.name}: ${o.label}`"
-            />
-          </el-select>
-          <el-select
-            v-model="filters.supplier_id" clearable filterable placeholder="按供应商"
-            style="width: 160px"
-          >
-            <el-option v-for="s in suppliers" :key="s.id" :value="s.id" :label="s.name" />
-          </el-select>
-          <el-input v-model="filters.q" placeholder="SKU 编码 / 名称" clearable style="width: 200px" />
+        <div class="main-tools">
+          <el-input v-model="filters.q" placeholder="SKU 编码 / 名称" clearable style="width: 240px">
+            <template #prefix><el-icon><Search /></el-icon></template>
+          </el-input>
           <span style="flex: 1"></span>
-          <el-radio-group v-model="viewMode" size="small">
-            <el-radio-button value="card"><el-icon><Grid /></el-icon></el-radio-button>
-            <el-radio-button value="table"><el-icon><List /></el-icon></el-radio-button>
-          </el-radio-group>
+          <el-tooltip content="显示设置（分面 / 默认视图 / 每页）" placement="top">
+            <el-button :icon="Setting" @click="router.push('/settings/general')" />
+          </el-tooltip>
+          <el-button :icon="Operation" @click="structuredSearchVisible = true">按配置找货</el-button>
           <el-button @click="exportList">导出 Excel</el-button>
           <el-button type="primary" @click="router.push('/configure')">+ 新配置</el-button>
         </div>
+
+        <StructuredSearchDrawer
+          v-model="structuredSearchVisible" :products="tree.products" :suppliers="suppliers"
+          @apply="applyStructuredQuery"
+        />
+
+        <SkuSortBar
+          :total="total" :sort="sort" :currency="currency" :view="viewMode" :chips="activeChips"
+          @update:sort="onSort" @update:currency="onCurrency" @update:view="(v) => viewMode = v"
+          @remove="removeChip" @clear-all="clearAllFilters"
+        />
 
         <!-- 卡片视图 -->
         <div v-if="viewMode === 'card'" v-loading="loading">
@@ -524,32 +743,34 @@ function priceRange(t: any): string | null {
                       style="margin-left: 4px">{{ healthTag(row)!.text }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="240">
+          <el-table-column label="操作" width="270">
             <template #default="{ row }">
-              <el-tooltip :disabled="!addDisabledReason(row)" :content="addDisabledReason(row) || ''" placement="top">
-                <span>
-                  <el-button size="small" type="primary" :disabled="!!addDisabledReason(row)"
-                             @click.stop="addToQuote(row)">加入报价单</el-button>
-                </span>
-              </el-tooltip>
-              <el-button v-if="auth.canSetPrice" size="small" @click.stop="openPriceDialog(row)">改价</el-button>
-              <el-tooltip
-                v-if="row.status === 'active' && !row.superseded_by_sku_id"
-                content="修改此 SKU 配置（生成新 SKU，原 SKU 停用或保活）" placement="top"
-              >
-                <el-button size="small" text :icon="EditPen" aria-label="修改配置"
-                           @click.stop="router.push({ path: '/configure', query: { edit_sku_id: row.id } })" />
-              </el-tooltip>
-              <el-tooltip content="以此为模板复制配置一个新 SKU" placement="top">
-                <el-button size="small" text :icon="CopyDocument" aria-label="以此再配置"
-                           @click.stop="router.push({ path: '/configure', query: { sku_id: row.id } })" />
-              </el-tooltip>
+              <div class="row-actions">
+                <el-tooltip :disabled="!addDisabledReason(row)" :content="addDisabledReason(row) || ''" placement="top">
+                  <span>
+                    <el-button size="small" type="primary" :disabled="!!addDisabledReason(row)"
+                               @click.stop="addToQuote(row)">加入报价单</el-button>
+                  </span>
+                </el-tooltip>
+                <el-button v-if="auth.canSetPrice" size="small" @click.stop="openPriceDialog(row)">改价</el-button>
+                <el-tooltip
+                  v-if="row.status === 'active' && !row.superseded_by_sku_id"
+                  content="修改此 SKU 配置（生成新 SKU，原 SKU 停用或保活）" placement="top"
+                >
+                  <el-button size="small" text :icon="EditPen" aria-label="修改配置"
+                             @click.stop="router.push({ path: '/configure', query: { edit_sku_id: row.id } })" />
+                </el-tooltip>
+                <el-tooltip content="以此为模板复制配置一个新 SKU" placement="top">
+                  <el-button size="small" text :icon="CopyDocument" aria-label="以此再配置"
+                             @click.stop="router.push({ path: '/configure', query: { sku_id: row.id } })" />
+                </el-tooltip>
+              </div>
             </template>
           </el-table-column>
         </el-table>
 
         <el-pagination
-          v-model:current-page="page" :total="total" :page-size="20"
+          v-model:current-page="page" :total="total" :page-size="pref.pageSize"
           layout="total, prev, pager, next" style="margin-top: 12px; justify-content: end"
         />
       </el-card>
@@ -669,33 +890,20 @@ function priceRange(t: any): string | null {
         </div>
       </div>
 
-      <!-- 区② 来源地图 -->
+      <!-- 区② 来源地图：清晰两列式（部件 | 供应商），按产品构成顺序平铺、不分黑白盒组 -->
       <div class="pd-section">
         <div class="pd-section-head"><span>来源地图</span></div>
         <div class="src-box">
-          <template v-if="sourcingGrouped.none.length">
-            <div class="src-grp danger">未标注来源</div>
-            <div v-for="(r, i) in sourcingGrouped.none" :key="'n' + i" class="src-line">
-              <span class="src-label">{{ r.label }}</span>
-              <span class="src-warn"><el-icon><WarningFilled /></el-icon> 未标注来源</span>
-            </div>
-          </template>
-          <template v-if="sourcingGrouped.black.length">
-            <div class="src-grp">黑盒成品件</div>
-            <div v-for="(r, i) in sourcingGrouped.black" :key="'b' + i" class="src-line">
-              <span class="src-label">{{ r.label }}</span>
-              <span><el-tag size="small" type="primary" effect="dark">成品</el-tag><el-icon class="src-arrow"><Right /></el-icon><span class="src-sup">{{ r.supplier }}</span></span>
-            </div>
-          </template>
-          <template v-if="sourcingGrouped.white.length">
-            <div class="src-grp">白盒标注</div>
-            <div v-for="(r, i) in sourcingGrouped.white" :key="'w' + i" class="src-line">
-              <span class="src-label">{{ r.label }}</span>
-              <span><el-tag size="small" type="info" effect="plain">标注</el-tag><el-icon class="src-arrow"><Right /></el-icon><span class="src-sup">{{ r.supplier }}</span></span>
-            </div>
-          </template>
+          <div v-for="(r, i) in sourcingFlat" :key="i" class="src-line">
+            <span class="src-label">{{ r.label }}</span>
+            <span v-if="r.supplier" class="src-sup">
+              <el-icon class="src-arrow"><Right /></el-icon>{{ r.supplier }}
+            </span>
+            <span v-else class="src-nosrc">未标注</span>
+          </div>
+          <el-empty v-if="!sourcingFlat.length" :image-size="40" description="无外购来源" />
         </div>
-        <p class="sec-note">黑盒成品件来源由其供应商派生；白盒标注为节点级标注（已入指纹，改来源生成新 SKU）。</p>
+        <p class="sec-note">按产品构成顺序逐部件列出采购来源；「未标注」表示自产 / 未指定来源。</p>
       </div>
 
       <!-- 区③ 价格历史 + 趋势 -->
@@ -804,17 +1012,7 @@ function priceRange(t: any): string | null {
   gap: 10px;
   margin-bottom: 12px;
 }
-
-.side-title { font-size: 12px; color: var(--el-text-color-secondary); margin-bottom: 4px; }
-.side-group { font-weight: 500; margin: 6px 0 2px; font-size: 13px; }
-.side-item {
-  display: flex; align-items: center; justify-content: space-between; gap: 6px;
-  padding: 5px 8px; border-radius: 6px; cursor: pointer; font-size: 13px;
-}
-.side-item:hover { background: var(--el-fill-color-light); }
-.side-item.active { background: var(--el-color-primary-light-9); color: var(--el-color-primary); }
-.side-item.indent { padding-left: 16px; }
-.side-item .cnt { color: var(--el-text-color-secondary); font-size: 12px; font-variant-numeric: tabular-nums; }
+.main-tools { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; }
 
 .card-grid {
   display: grid;
@@ -867,10 +1065,13 @@ function priceRange(t: any): string | null {
 .copy-code { cursor: pointer; color: var(--ph-gray-400); vertical-align: -2px; }
 .copy-code:hover { color: var(--ph-brand-600); }
 
+/* 抽屉 body 默认 padding-top 会在 sticky 决策层之上留缝隙，下滚时 BOM 内容从此漏出（漏视野）。
+   修复：body 顶距清零（见文末非 scoped 块，需穿透 teleport），顶距移交决策层自身的 padding-top，
+   使其 sticky 贴合滚动区真正顶部、不透明背景完全盖住下方内容。 */
 .decide {
   position: sticky; top: 0; z-index: 2; background: var(--el-bg-color);
   border-bottom: 1px solid var(--el-border-color-light);
-  padding-bottom: 14px; margin-bottom: 14px;
+  padding: 16px 0 14px; margin-bottom: 14px;
 }
 .decide-name { font-size: 16px; font-weight: 600; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
 .link-tag { cursor: pointer; }
@@ -888,14 +1089,17 @@ function priceRange(t: any): string | null {
 
 .bom-box { background: var(--el-fill-color-light); border-radius: var(--ph-radius-md); padding: 10px 12px; }
 
-.src-box { background: var(--el-fill-color-light); border-radius: var(--ph-radius-md); padding: 8px 12px; }
-.src-grp { font-size: 12px; color: var(--el-text-color-secondary); margin: 6px 0 2px; }
-.src-grp.danger { color: var(--el-color-danger); }
-.src-line { display: flex; align-items: center; justify-content: space-between; font-size: 13px; padding: 3px 0; }
-.src-label { color: var(--el-text-color-primary); }
-.src-sup { color: var(--ph-brand-600); }
-.src-arrow { margin: 0 4px; color: var(--ph-gray-400); vertical-align: -2px; }
-.src-warn { color: var(--el-color-danger); font-size: 12px; }
+/* 来源地图：清晰两列式（部件左 · 供应商右），平铺无分组 */
+.src-box { background: var(--el-fill-color-light); border-radius: var(--ph-radius-md); padding: 4px 12px; }
+.src-line {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  font-size: 13px; padding: 6px 0;
+}
+.src-line + .src-line { border-top: 1px solid var(--el-border-color-lighter); }
+.src-label { color: var(--el-text-color-primary); flex-shrink: 0; }
+.src-sup { color: var(--ph-brand-600); display: inline-flex; align-items: center; text-align: right; }
+.src-arrow { margin-right: 2px; flex-shrink: 0; }
+.src-nosrc { color: var(--el-text-color-placeholder); }
 
 /* 产品库视图切换 + 产品全貌 */
 .home-toggle { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
@@ -922,6 +1126,17 @@ function priceRange(t: any): string | null {
 .ov-dims { font-size: 11px; color: var(--el-text-color-secondary); margin-top: 8px;
   border-top: 0.5px solid var(--el-border-color-lighter); padding-top: 8px; }
 .ov-unmodeled { color: var(--el-color-warning); }
+/* 表格操作列：强制单行不换行（与卡片 .sku-actions 同款），用 gap 取代 EP 默认按钮间距，
+   避免列宽不足时按钮被挤到第二行 */
+.row-actions { display: flex; align-items: center; gap: 4px; flex-wrap: nowrap; }
+.row-actions > span { display: inline-flex; }
+.row-actions :deep(.el-button) { margin-left: 0; }
 /* 表格视图：已作废行灰显（沉底由 displayRows 排序保证） */
 :deep(.row-retired) { color: var(--el-text-color-secondary); opacity: 0.7; }
+</style>
+
+<!-- 非 scoped：el-drawer teleport 到 body，scoped :deep 触达不到其内部；用 .sku-drawer 类限定，
+     仅作用于本 SKU 详情抽屉，不影响其它抽屉。清掉 body 顶距，配合 .decide sticky 消除"漏视野"。 -->
+<style>
+.sku-drawer .el-drawer__body { padding-top: 0; }
 </style>

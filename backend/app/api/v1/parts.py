@@ -20,12 +20,15 @@ from app.schemas.parts import (
     PurchasedPartIn,
     PurchasedPartOut,
     PurchasedPartUpdate,
+    SupplierCategoryCount,
     SupplierIn,
+    SupplierLinkedSku,
     SupplierOut,
     SupplierOverviewOut,
     SupplierUpdate,
 )
 from app.services.codes import next_code
+from app.services.config_engine import resync_names_for_part
 from app.services.graybox import summarize_spec
 from app.services.template_service import get_or_404
 
@@ -109,6 +112,70 @@ def suppliers_overview(db: Session = Depends(get_db), _: AppUser = Depends(get_c
     return out
 
 
+@router.get("/suppliers/{supplier_id}/linked-skus", response_model=list[SupplierLinkedSku])
+def supplier_linked_skus(
+    supplier_id: int, db: Session = Depends(get_db), _: AppUser = Depends(get_current_user)
+):
+    """该供应商关联的在售 SKU（黑盒经成品件 ∪ 白盒节点标注），含用法来源，供「关联成品」页下钻。
+    与 overview 的 linked_skus 同口径(active SKU 去重)。"""
+    get_or_404(db, Supplier, supplier_id)
+    by_sku: dict[int, SupplierLinkedSku] = {}
+    # 黑盒：经该供应商的成品件供货（一 SKU 可经多件 → 收集件名）
+    for r in db.execute(text(
+        "SELECT DISTINCT s.id sid, s.sku_code, s.name nm, s.status, pp.name part_name "
+        "FROM sku_config_node scn "
+        "JOIN purchased_part pp ON pp.id = scn.purchased_part_id AND pp.supplier_id = :sup "
+        "JOIN sku s ON s.id = scn.sku_id AND s.status = 'active'"
+    ), {"sup": supplier_id}).all():
+        o = by_sku.get(r.sid)
+        if o is None:
+            o = SupplierLinkedSku(sku_id=r.sid, sku_code=r.sku_code, name=r.nm, status=r.status)
+            by_sku[r.sid] = o
+        if r.part_name not in o.via_blackbox:
+            o.via_blackbox.append(r.part_name)
+    # 白盒：节点直接标注该供应商
+    for r in db.execute(text(
+        "SELECT DISTINCT s.id sid, s.sku_code, s.name nm, s.status "
+        "FROM sku_config_node scn "
+        "JOIN sku s ON s.id = scn.sku_id AND s.status = 'active' "
+        "WHERE scn.supplier_id = :sup"
+    ), {"sup": supplier_id}).all():
+        o = by_sku.get(r.sid)
+        if o is None:
+            o = SupplierLinkedSku(sku_id=r.sid, sku_code=r.sku_code, name=r.nm, status=r.status)
+            by_sku[r.sid] = o
+        o.via_whitebox = True
+    return sorted(by_sku.values(), key=lambda x: x.sku_id, reverse=True)
+
+
+@router.get("/suppliers/{supplier_id}/category-breakdown",
+            response_model=list[SupplierCategoryCount])
+def supplier_category_breakdown(
+    supplier_id: int, db: Session = Depends(get_db), _: AppUser = Depends(get_current_user)
+):
+    """该供应商的「件目录」：按它**实际供应/标注的节点件类型(node_type)**分组，计该件类型被多少
+    在售 SKU 用到（黑盒经成品件 ∪ 白盒采购来源标注·去重）。归属严格按"该件类型本身由该供应商供应"，
+    不再因 SKU 某子件命中而把整机品类整只算入。按产品模板节点顺序(display_order)排列、不按数量。
+    下钻同口径：count == /skus?supplier_id=&supplier_part_type_id= 的 total（数字与下钻对齐）。"""
+    get_or_404(db, Supplier, supplier_id)
+    rows = db.execute(text(
+        "SELECT u.node_type_id, nt.name, nt.kind, count(DISTINCT u.sku_id) c "
+        "FROM ("
+        "  SELECT scn.sku_id, scn.node_type_id FROM sku_config_node scn "
+        "    JOIN purchased_part pp ON pp.id = scn.purchased_part_id AND pp.supplier_id = :sup "
+        "    JOIN sku s ON s.id = scn.sku_id AND s.status = 'active' "
+        "  UNION "
+        "  SELECT scn.sku_id, scn.node_type_id FROM sku_config_node scn "
+        "    JOIN sku s ON s.id = scn.sku_id AND s.status = 'active' "
+        "    WHERE scn.supplier_id = :sup"
+        ") u JOIN node_type nt ON nt.id = u.node_type_id "
+        "GROUP BY u.node_type_id, nt.name, nt.kind, nt.display_order "
+        "ORDER BY nt.display_order, nt.name"
+    ), {"sup": supplier_id}).all()
+    return [SupplierCategoryCount(node_type_id=r[0], name=r[1], kind=r[2], count=r[3])
+            for r in rows]
+
+
 @router.post("/suppliers", response_model=SupplierOut, status_code=201)
 def create_supplier(
     body: SupplierIn, db: Session = Depends(get_db), admin: AppUser = Depends(require_admin)
@@ -153,6 +220,7 @@ def update_supplier(
 def list_parts(
     node_type_id: int | None = None,
     supplier_id: int | None = None,
+    kind: str | None = Query(default=None, pattern=r"^(product|part)$"),
     q: str | None = Query(default=None, max_length=100),
     status: str | None = Query(default=None, pattern=r"^(draft|active|merged|retired)$"),
     usable_only: bool = False,
@@ -161,6 +229,8 @@ def list_parts(
     stmt = select(PurchasedPart).order_by(PurchasedPart.id.desc()).limit(200)
     if node_type_id is not None:
         stmt = stmt.where(PurchasedPart.node_type_id == node_type_id)
+    if kind is not None:  # 整机(product)/部件(part) 大类过滤——供 KPI「整机供应/部件供应」下钻
+        stmt = stmt.where(PurchasedPart.node_type.has(NodeType.kind == kind))
     if supplier_id is not None:
         stmt = stmt.where(PurchasedPart.supplier_id == supplier_id)
     if status is not None:
@@ -280,8 +350,14 @@ def update_part(
             continue
         before[field] = getattr(part, field)
         setattr(part, field, " ".join(value.split()) if field == "name" else value)
+    # 改名后同步刷新引用该件的 SKU 展示名（快照→实时对齐）；name 不入指纹，红线安全
+    resynced = (resync_names_for_part(db, part.id)
+                if "name" in before and before["name"] != part.name else 0)
+    after = body.model_dump(exclude_unset=True)
+    if resynced:
+        after["name_resynced_skus"] = resynced
     write_audit(db, actor_id=admin.id, action="update", entity_type="purchased_part",
-                entity_id=part.id, before=before, after=body.model_dump(exclude_unset=True))
+                entity_id=part.id, before=before, after=after)
     db.commit()
     return _part_out(db, part)
 

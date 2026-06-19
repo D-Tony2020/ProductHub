@@ -1,6 +1,7 @@
 """SKU：创建（配置落库）、检索（动态属性筛选）、详情（只读配置树+价格史）、作废/恢复、清单导出。"""
 import io
 from datetime import date, datetime, timedelta
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -88,6 +89,20 @@ _BLOCKING_SKU = """(
 # 待治理 = 完整性族 ∪ 供给族（非 ok）。stats/overview/incomplete 筛选计数用。
 _NONOK_SKU = f"({_BLOCKING_SKU} OR {_SUPPLY_SKU})"
 
+# 采购来源分面谓词（相关 EXISTS，引用未起别名的 sku）。三类在数据上近似互斥且全覆盖：
+#   · blackbox 含外购子件：配置树存在挂在子节点上的外购成品件（最典型的贸易拼装）
+#   · whitebox 纯自配：全树无任何外购件（完全自行配置）
+#   · direct   整机直采：根节点本身即一件外购成品（按成品整机直接采购转售）
+# 全部为服务端常量，不接受任何用户字符串拼接（facet 键经白名单校验后才取用）。
+_SOURCING_SQL = {
+    "blackbox": "EXISTS (SELECT 1 FROM sku_config_node cn WHERE cn.sku_id = sku.id "
+                "AND cn.purchased_part_id IS NOT NULL AND cn.parent_node_id IS NOT NULL)",
+    "whitebox": "NOT EXISTS (SELECT 1 FROM sku_config_node cn WHERE cn.sku_id = sku.id "
+                "AND cn.purchased_part_id IS NOT NULL)",
+    "direct": "EXISTS (SELECT 1 FROM sku_config_node cn WHERE cn.sku_id = sku.id "
+              "AND cn.purchased_part_id IS NOT NULL AND cn.parent_node_id IS NULL)",
+}
+
 
 def _health_status_map(db: Session, sku_ids: list[int]) -> dict[int, str]:
     """一次性判定一页 SKU 的健康徽标(集合下推)，替代逐行 compute_health。
@@ -122,7 +137,7 @@ def _sku_out(
     return out
 
 
-def _node_out(db: Session, node: SkuConfigNode) -> SkuNodeOut:
+def _node_out(db: Session, node: SkuConfigNode, node_types: dict[int, NodeType]) -> SkuNodeOut:
     attrs = []
     for av in sorted(node.attribute_values, key=lambda v: v.attribute.display_order):
         attrs.append(
@@ -150,8 +165,8 @@ def _node_out(db: Session, node: SkuConfigNode) -> SkuNodeOut:
         slot_code=node.slot.code if node.slot else None,
         slot_name=node.slot.name if node.slot else None,
         node_type_id=node.node_type_id,
-        node_type_code=db.get(NodeType, node.node_type_id).code,
-        node_type_name=db.get(NodeType, node.node_type_id).name,
+        node_type_code=node_types[node.node_type_id].code,
+        node_type_name=node_types[node.node_type_id].name,
         mode=node.mode,
         purchased_part_id=part.id if part else None,
         purchased_part_name=part.name if part else None,
@@ -161,7 +176,7 @@ def _node_out(db: Session, node: SkuConfigNode) -> SkuNodeOut:
         part_spec_summary=summarize_spec(db, part.spec_config) if part else "",
         attributes=attrs,
         children=[
-            _node_out(db, c)
+            _node_out(db, c, node_types)
             for c in sorted(node.children, key=lambda c: (c.slot.display_order if c.slot else 0))
         ],
     )
@@ -190,6 +205,15 @@ def search(
     option_id: list[int] = Query(default=[]),
     purchased_part_id: int | None = None,
     supplier_id: int | None = None,
+    supplier_part_type_id: int | None = None,
+    sp_pair: list[str] = Query(default=[]),  # 结构化检索·多对"供应商id:件类型id"，各自 AND
+    sort: str = Query(default="recent",
+                      pattern=r"^(recent|price_asc|price_desc|created_asc|code|name)$"),
+    currency: str = Query(default="USD", pattern=r"^[A-Z]{3}$"),
+    price_min: Decimal | None = Query(default=None, ge=0),
+    price_max: Decimal | None = Query(default=None, ge=0),
+    quotable: bool = False,
+    sourcing: list[str] = Query(default=[]),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
     mine: bool = False,
@@ -230,22 +254,96 @@ def search(
             )
         )
     if supplier_id is not None:
-        # 按供应商分类（"出现即计入"）：SKU 配置树中任一黑盒件来自该供应商即命中。
-        # 经 SkuConfigNode.purchased_part_id → PurchasedPart.supplier_id 两级关联；
-        # 纯自产(无外购件)的 SKU 天然不落入任何供应商，符合设计。
-        stmt = stmt.where(
-            Sku.id.in_(
-                select(SkuConfigNode.sku_id)
-                .join(PurchasedPart, PurchasedPart.id == SkuConfigNode.purchased_part_id)
-                .where(PurchasedPart.supplier_id == supplier_id)
-            )
+        # 关联成品口径（与供应商概览 linked_skus / 关联成品页 /suppliers/{id}/linked-skus 同口径）：
+        # 黑盒 ∪ 白盒，"出现即计入"。
+        #   · 黑盒：配置树某节点的外购成品件来自该供应商（scn.purchased_part_id → pp.supplier_id）
+        #   · 白盒：配置树某节点直接标注该供应商（scn.supplier_id，方案甲采购溯源）
+        # 纯自产且无任何来源标注的 SKU 天然不落入任何供应商，符合设计。
+        black = (
+            select(SkuConfigNode.sku_id)
+            .join(PurchasedPart, PurchasedPart.id == SkuConfigNode.purchased_part_id)
+            .where(PurchasedPart.supplier_id == supplier_id)
         )
+        white = select(SkuConfigNode.sku_id).where(SkuConfigNode.supplier_id == supplier_id)
+        # 「供应商×件类型」下钻：再收窄到"该命中节点本身是该件类型"，与 category-breakdown 同口径
+        # （count == 本筛选 total，数字对齐）。仅在 supplier_id 给定时生效。
+        if supplier_part_type_id is not None:
+            black = black.where(SkuConfigNode.node_type_id == supplier_part_type_id)
+            white = white.where(SkuConfigNode.node_type_id == supplier_part_type_id)
+        stmt = stmt.where(Sku.id.in_(black) | Sku.id.in_(white))
+    # 结构化检索·多对来源约束：每个"供应商id:件类型id"对各自 AND（黑∪白），
+    # 与 option_id 的逐条目子查询叠加同构——表达"该部件由该供应商供应"，可任意多对并立。
+    for pair in sp_pair:
+        sid_ntid = pair.split(":", 1)
+        if len(sid_ntid) != 2 or not all(x.lstrip("-").isdigit() for x in sid_ntid):
+            continue  # 形如 "3:24"；非法静默跳过（防注入：只接受两个整数）
+        sid, ntid = int(sid_ntid[0]), int(sid_ntid[1])
+        pblack = (
+            select(SkuConfigNode.sku_id)
+            .join(PurchasedPart, PurchasedPart.id == SkuConfigNode.purchased_part_id)
+            .where(PurchasedPart.supplier_id == sid, SkuConfigNode.node_type_id == ntid)
+        )
+        pwhite = select(SkuConfigNode.sku_id).where(
+            SkuConfigNode.supplier_id == sid, SkuConfigNode.node_type_id == ntid)
+        stmt = stmt.where(Sku.id.in_(pblack) | Sku.id.in_(pwhite))
+    # 采购来源分面（分面内 OR：选中多类取并集）。键经 _SOURCING_SQL 白名单过滤，只拼服务端常量
+    sourcing_clauses = [_SOURCING_SQL[k] for k in dict.fromkeys(sourcing) if k in _SOURCING_SQL]
+    if sourcing_clauses:
+        stmt = stmt.where(sql_text("(" + " OR ".join(sourcing_clauses) + ")"))
+    # 现价价格区间（逐币种）：仅当该币种存在落在区间内的现价才命中。:ccy/:pmin/:pmax 绑定防注入，
+    # 走 v_sku_current_price（已收口 superseded/有效期）+ ix_sku_price_current 部分索引
+    price_conds = []
+    if price_min is not None:
+        price_conds.append("cp.price >= :pmin")
+    if price_max is not None:
+        price_conds.append("cp.price <= :pmax")
+    if price_conds:
+        params: dict = {"ccy": currency}
+        if price_min is not None:
+            params["pmin"] = price_min
+        if price_max is not None:
+            params["pmax"] = price_max
+        stmt = stmt.where(sql_text(
+            "EXISTS (SELECT 1 FROM v_sku_current_price cp "
+            "WHERE cp.sku_id = sku.id AND cp.currency = :ccy AND "
+            + " AND ".join(price_conds) + ")"
+        ).bindparams(**params))
+    if quotable:
+        # 可立即报价 = active ∧ 不缺必选(不触报价闸) ∧ 该币种有现价（与 quotes.add 三道闸同口径）
+        stmt = stmt.where(
+            Sku.status == "active",
+            sql_text(f"NOT {_BLOCKING_SKU}"),
+            sql_text("EXISTS (SELECT 1 FROM v_sku_current_price cp "
+                     "WHERE cp.sku_id = sku.id AND cp.currency = :ccy)").bindparams(ccy=currency),
+        )
+
     total = db.execute(select(func.count()).select_from(stmt.subquery())).scalar_one()
+
+    # 排序：价格档走逐币种现价相关子查询（NULLS LAST 把无价沉底，再以 id 兜稳定序）；
+    # 其余档走 sku 本表列（id/sku_code/name/created_at 均有索引）。direction 取自定值集，非用户串。
+    if sort in ("price_asc", "price_desc"):
+        direction = "ASC" if sort == "price_asc" else "DESC"
+        order_by: tuple = (
+            sql_text(
+                "(SELECT cp.price FROM v_sku_current_price cp "
+                f"WHERE cp.sku_id = sku.id AND cp.currency = :ccy LIMIT 1) {direction} NULLS LAST"
+            ).bindparams(ccy=currency),
+            Sku.id.desc(),
+        )
+    elif sort == "created_asc":
+        order_by = (Sku.id.asc(),)
+    elif sort == "code":
+        order_by = (Sku.sku_code.asc(),)
+    elif sort == "name":
+        order_by = (Sku.name.asc(), Sku.id.desc())
+    else:  # recent（综合·最新）：与历史默认一致
+        order_by = (Sku.id.desc(),)
+
     # 列表徽标改集合下推(不再逐行 compute_health 遍历配置树)，现价改批量 IN(不再逐 SKU N+1)，
     # 仅预取 root_type / superseded_by(展示用)——一页固定几条 SQL，与本页行数无关。
     rows = db.execute(
         stmt.options(selectinload(Sku.root_type), selectinload(Sku.superseded_by))
-        .order_by(Sku.id.desc()).offset((page - 1) * page_size).limit(page_size)
+        .order_by(*order_by).offset((page - 1) * page_size).limit(page_size)
     ).scalars().all()
     page_ids = [s.id for s in rows]
     health = _health_status_map(db, page_ids)
@@ -395,15 +493,29 @@ def detail(
     sku = db.execute(
         select(Sku)
         .where(Sku.id == sku_id)
-        .options(selectinload(Sku.nodes).selectinload(SkuConfigNode.attribute_values))
+        .options(
+            # 一次性预加载 _node_out 递归用到的全部关系，消除逐节点懒加载 N+1：
+            # 属性值→属性/选项、采购件→供应商、槽、白盒节点供应商、子节点。
+            selectinload(Sku.nodes).selectinload(SkuConfigNode.attribute_values)
+            .selectinload(SkuAttributeValue.attribute),
+            selectinload(Sku.nodes).selectinload(SkuConfigNode.attribute_values)
+            .selectinload(SkuAttributeValue.option),
+            selectinload(Sku.nodes).selectinload(SkuConfigNode.purchased_part)
+            .selectinload(PurchasedPart.supplier),
+            selectinload(Sku.nodes).selectinload(SkuConfigNode.slot),
+            selectinload(Sku.nodes).selectinload(SkuConfigNode.supplier),
+            selectinload(Sku.nodes).selectinload(SkuConfigNode.children),
+        )
     ).scalar_one_or_none()
     if sku is None:
         raise HTTPException(404, f"SKU {sku_id} 不存在")
+    # 件类型无 ORM 关系，一次性按主键批量取（~数十条），替代 _node_out 内逐节点 db.get。
+    node_types = {nt.id: nt for nt in db.execute(select(NodeType)).scalars()}
     root = next((n for n in sku.nodes if n.parent_node_id is None), None)
     health = compute_health(db, sku)
     out = SkuDetailOut(
         **_sku_out(db, sku, health.status).model_dump(),
-        config_tree=_node_out(db, root) if root else None,
+        config_tree=_node_out(db, root, node_types) if root else None,
         health=health,
     )
     return out

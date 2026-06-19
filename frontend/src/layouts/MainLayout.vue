@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import {
-  Box, Document, Goods, Search, Setting, ShoppingCart,
+  Box, Document, Expand, Fold, Goods, Search, Setting, ShoppingCart,
 } from '@element-plus/icons-vue'
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { api } from '../api/client'
+import logoUrl from '../assets/logo-square.png'
 import { useAuthStore } from '../stores/auth'
 import { useQuoteCartStore } from '../stores/quoteCart'
 
@@ -24,6 +25,13 @@ function toggleDensity() {
   if (density.value === 'compact') document.documentElement.setAttribute('data-density', 'compact')
   else document.documentElement.removeAttribute('data-density')
   localStorage.setItem('ph-density', density.value)
+}
+
+// 左侧一级导航折叠（localStorage 持久化）：折叠后只剩图标，子菜单悬浮弹出
+const navCollapsed = ref(localStorage.getItem('ph-nav-collapsed') === '1')
+function toggleNav() {
+  navCollapsed.value = !navCollapsed.value
+  localStorage.setItem('ph-nav-collapsed', navCollapsed.value ? '1' : '0')
 }
 
 const avatarText = computed(() => auth.user?.display_name?.[0] ?? '·')
@@ -69,25 +77,39 @@ function logout() {
 
 <template>
   <el-container style="height: 100vh">
-    <el-aside width="210px" class="aside">
+    <el-aside :width="navCollapsed ? '64px' : '210px'" class="aside" :class="{ collapsed: navCollapsed }">
       <div class="brand">
-        <div class="logo"><el-icon :size="18"><Goods /></el-icon></div>
-        <div class="brand-text">ProductHub<br /><small>北京合胜 · 产品中台</small></div>
+        <div class="logo"><img :src="logoUrl" class="logo-img" alt="ProductHub" /></div>
+        <div v-show="!navCollapsed" class="brand-text">ProductHub<br /><small>北京合胜 · 产品中台</small></div>
       </div>
-      <el-menu :default-active="route.path" router class="nav-menu">
+      <el-menu
+        :default-active="route.path" router class="nav-menu"
+        :collapse="navCollapsed" :collapse-transition="false"
+      >
         <el-menu-item-group title="业务">
-          <el-menu-item index="/skus"><el-icon><Goods /></el-icon>产品库</el-menu-item>
-          <el-menu-item index="/configure"><el-icon><Box /></el-icon>配置看板</el-menu-item>
-          <el-menu-item index="/quotations"><el-icon><Document /></el-icon>报价单</el-menu-item>
-          <el-menu-item index="/suppliers"><el-icon><ShoppingCart /></el-icon>供应商与采购件</el-menu-item>
+          <el-menu-item index="/skus"><el-icon><Goods /></el-icon><template #title>产品库</template></el-menu-item>
+          <el-menu-item index="/configure"><el-icon><Box /></el-icon><template #title>配置看板</template></el-menu-item>
+          <el-menu-item index="/quotations"><el-icon><Document /></el-icon><template #title>报价单</template></el-menu-item>
+          <el-menu-item index="/suppliers"><el-icon><ShoppingCart /></el-icon><template #title>供应商与采购件</template></el-menu-item>
         </el-menu-item-group>
-        <el-sub-menu v-if="auth.isAdmin" index="/admin">
-          <template #title><el-icon><Setting /></el-icon>系统设置</template>
-          <el-menu-item index="/admin/templates">产品模板</el-menu-item>
-          <el-menu-item index="/admin/import">数据导入</el-menu-item>
-          <el-menu-item index="/admin/users">用户管理</el-menu-item>
+        <el-sub-menu index="/admin">
+          <template #title><el-icon><Setting /></el-icon><span>系统设置</span></template>
+          <el-menu-item index="/settings/general">通用设置</el-menu-item>
+          <template v-if="auth.isAdmin">
+            <el-menu-item index="/admin/templates">产品模板</el-menu-item>
+            <el-menu-item index="/admin/import">数据导入</el-menu-item>
+            <el-menu-item index="/admin/users">用户管理</el-menu-item>
+          </template>
         </el-sub-menu>
       </el-menu>
+      <div class="aside-foot">
+        <el-tooltip :content="navCollapsed ? '展开导航' : '收起导航'" placement="right" :disabled="!navCollapsed">
+          <el-button text class="fold-btn" @click="toggleNav">
+            <el-icon :size="18"><component :is="navCollapsed ? Expand : Fold" /></el-icon>
+            <span v-show="!navCollapsed">收起导航</span>
+          </el-button>
+        </el-tooltip>
+      </div>
     </el-aside>
     <el-container>
       <el-header class="topbar">
@@ -138,13 +160,29 @@ function logout() {
 </template>
 
 <style scoped>
-.aside { border-right: 1px solid var(--el-border-color-light); background: var(--el-bg-color); }
-.brand { display: flex; align-items: center; gap: 10px; padding: 16px; }
-.logo {
-  width: 32px; height: 32px; border-radius: var(--ph-radius-sm);
-  background: var(--ph-brand-600); color: var(--el-color-white);
-  display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+.aside {
+  border-right: 1px solid var(--el-border-color-light); background: var(--el-bg-color);
+  display: flex; flex-direction: column; overflow: hidden;
+  transition: width var(--ph-duration-base) var(--ph-ease);
 }
+.brand { display: flex; align-items: center; gap: 10px; padding: 16px; flex-shrink: 0; }
+.aside.collapsed .brand { justify-content: center; padding: 16px 0; }
+/* 折叠态：隐藏分组标题（64px 容不下）；菜单与底部收起条 */
+.aside.collapsed :deep(.el-menu-item-group__title) { display: none; }
+.nav-menu:not(.el-menu--collapse) { width: 100%; }
+.nav-menu { flex: 1; overflow-y: auto; overflow-x: hidden; }
+.aside-foot { flex-shrink: 0; border-top: 1px solid var(--el-border-color-lighter); padding: 6px; }
+.fold-btn {
+  width: 100%; height: 40px; justify-content: flex-start; gap: 8px;
+  color: var(--el-text-color-secondary); padding-left: 20px;
+}
+.aside.collapsed .fold-btn { justify-content: center; padding-left: 0; }
+.fold-btn:hover { color: var(--ph-brand-600); background: var(--ph-gray-50); }
+.logo {
+  width: 34px; height: 34px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+}
+.logo-img { width: 100%; height: 100%; object-fit: contain; display: block; }
 .brand-text { font-weight: 600; font-size: 16px; line-height: 1.25; }
 .brand-text small { font-weight: 400; font-size: 12px; color: var(--el-text-color-secondary); }
 

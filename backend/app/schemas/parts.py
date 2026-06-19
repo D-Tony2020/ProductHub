@@ -95,6 +95,28 @@ class LinkedSku(BaseModel):
     status: str
 
 
+class SupplierLinkedSku(BaseModel):
+    """供应商关联成品：用到该供应商的在售 SKU + 用法来源（黑盒经成品件名 / 白盒节点标注）。"""
+
+    sku_id: int
+    sku_code: str
+    name: str
+    status: str
+    via_blackbox: list[str] = []  # 经这些成品件黑盒供货（件名）
+    via_whitebox: bool = False    # 是否有白盒节点直接标注该供应商
+
+
+class SupplierCategoryCount(BaseModel):
+    """供应商「件目录」交叉计数：该供应商**实际供应/标注**的件类型(node_type)，
+    及用到该供应商该件类型的在售 SKU 数（黑∪白·去重）。供「按供应商」视角下钻。
+    下钻口径 = /skus 的 supplier_id + supplier_part_type_id（数字与下钻 total 对齐）。"""
+
+    node_type_id: int
+    name: str
+    kind: str          # product=整机件 / part=部件件
+    count: int
+
+
 class PurchasedPartDetailOut(PurchasedPartOut):
     """采购件详情页：在列表字段之上带关联在售 SKU 列表。"""
 

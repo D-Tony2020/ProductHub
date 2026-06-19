@@ -40,6 +40,43 @@ def test_supplier_filter(client, template):
                       headers=admin).json()["total"] == 0
 
 
+def test_supplier_filter_includes_whitebox(client, template):
+    """供应商口径 = 黑盒(经成品件) ∪ 白盒(节点级供应商标注)，与关联成品页 / 概览 linked_skus 同口径：
+    既要命中经其成品件供货的 SKU，也要命中仅在白盒节点上标注其来源的 SKU。"""
+    admin = login(client, "admin", "admin@Test2026")
+    sup = template["supplier"].id
+    # 黑盒：阀门经该供应商成品件
+    _create(client, template, admin, charge="KG4", valve_mode="purchased")
+    # 白盒：阀门自配(不经任何成品件)，仅在筒体节点直接标注该供应商
+    p = make_payload(template, charge="KG8", valve_mode="configured")
+    cyl_sel = next(s for s in p.root.slots if s.slot_id == template["slot_cyl"].id)
+    cyl_sel.child.supplier_id = sup
+    client.post("/api/v1/skus", json={"config": p.model_dump()}, headers=admin)
+    # 黑、白两只都应落入该供应商（并集）
+    assert client.get("/api/v1/skus", params={"supplier_id": sup},
+                      headers=admin).json()["total"] == 2
+
+
+def test_part_rename_resyncs_sku_name(client, template, db):
+    """成品件改名 → 引用它的 SKU 展示名实时同步；红线：sku_code / fingerprint 永不变。"""
+    from app.models import Sku
+    admin = login(client, "admin", "admin@Test2026")
+    res = _create(client, template, admin, charge="KG4", valve_mode="purchased")  # 黑盒阀门=华消K2阀门
+    sku_id = res["id"]
+    assert template["part"].name in res["name"]          # 创建时展示名内含件名（华消K2阀门）
+    old_code = res["sku_code"]
+    old_fp = db.get(Sku, sku_id).fingerprint
+    r = client.patch(f"/api/v1/purchased-parts/{template['part'].id}",
+                     json={"name": "华消K3阀门改"}, headers=admin)
+    assert r.status_code == 200
+    db.expire_all()
+    s = db.get(Sku, sku_id)
+    assert "华消K3阀门改" in s.name                        # 展示名已随件名同步
+    assert "华消K2阀门" not in s.name                      # 旧件名已脱离
+    assert s.sku_code == old_code                         # 红线：编码不可变
+    assert s.fingerprint == old_fp                        # 红线：指纹不可变
+
+
 # ---------- ② 档位二：双维上级归属 ----------
 
 def test_node_type_parents_two_dimensions(client, template):

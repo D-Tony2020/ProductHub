@@ -1,8 +1,8 @@
 <script setup lang="ts">
-/** 产品构成 BOM 树递归节点（纯展示·零数据流）。三态：
- *  白盒(configured) caret 可展开 + 属性 chip；黑盒(purchased) 工业蓝色条 + 成品 tag + 供应商(终止)；
- *  灰盒规格行挂在黑盒下方。折叠态由父级传入的 reactive Set<path> 管。详见 frontend/DESIGN.md。 */
-import { ArrowDown, ArrowRight, Right } from '@element-plus/icons-vue'
+/** 产品构成 BOM 树递归节点（纯展示·零数据流）：白盒(configured) caret 展开 + 属性 chip；
+ *  黑盒(purchased) [成品] + 件名。只讲构成、不含供应商（来源见详情页「来源地图」，职能不交叉）。
+ *  折叠态由父级传入的 reactive Set<path> 管。 */
+import { ArrowDown, ArrowRight } from '@element-plus/icons-vue'
 import { computed } from 'vue'
 
 defineOptions({ name: 'BomTreeNode' })  // 显式名，保证模板自递归可解析
@@ -12,11 +12,12 @@ const props = defineProps<{ node: any; depth?: number; path?: string; collapsed:
 const p = computed(() => props.path ?? '0')
 const isBlackbox = computed(() => props.node?.mode === 'purchased')
 const hasChildren = computed(() => Array.isArray(props.node?.children) && props.node.children.length > 0)
-const open = computed(() => !props.collapsed.has(p.value))
+const open = computed(() => !props.collapsed?.has(p.value))
 const spec = computed(() =>
   [props.node?.part_spec_summary, props.node?.part_spec_note].filter(Boolean).join('；'))
 
 function toggle() {
+  if (!props.collapsed) return
   if (props.collapsed.has(p.value)) props.collapsed.delete(p.value)
   else props.collapsed.add(p.value)
 }
@@ -24,23 +25,18 @@ function toggle() {
 
 <template>
   <div class="bom-node">
-    <div class="bom-row" :class="{ blackbox: isBlackbox }">
+    <div class="bom-row">
       <i v-if="hasChildren" class="bom-caret" @click="toggle">
         <el-icon><component :is="open ? ArrowDown : ArrowRight" /></el-icon>
       </i>
-      <span v-else class="bom-leaf">·</span>
+      <span v-else class="bom-leaf"></span>
 
-      <el-tag v-if="isBlackbox" size="small" type="primary" effect="dark" class="bom-tag">成品</el-tag>
       <span v-if="node.slot_name" class="bom-slot">{{ node.slot_name }}：</span>
+      <el-tag v-if="isBlackbox" size="small" type="primary" effect="dark" class="bom-tag">成品</el-tag>
       <span class="bom-name">{{ isBlackbox ? node.purchased_part_name : node.node_type_name }}</span>
 
-      <!-- 黑盒：供应商（终止） -->
-      <span v-if="isBlackbox && node.supplier_name" class="bom-sup">
-        <el-icon class="bom-sup-arrow"><Right /></el-icon>{{ node.supplier_name }}
-      </span>
-
-      <!-- 白盒：属性 chip -->
-      <template v-else>
+      <!-- 白盒：属性 chip（黑盒只件名；供应商见「来源地图」，职能不交叉） -->
+      <template v-if="!isBlackbox">
         <el-tag
           v-for="(a, i) in node.attributes" :key="i" size="small"
           :type="a.option_active === false ? 'warning' : 'info'" effect="plain" class="bom-chip"
@@ -68,19 +64,16 @@ function toggle() {
   border-radius: var(--ph-radius-xs);
 }
 .bom-row:hover { background: var(--el-fill-color-light); }
-.bom-row.blackbox { border-left: 3px solid var(--ph-brand-600); padding-left: 6px; }
-.bom-caret { cursor: pointer; color: var(--el-text-color-secondary); display: inline-flex; }
-.bom-leaf { color: var(--ph-gray-400); width: 16px; text-align: center; }
+.bom-caret { cursor: pointer; color: var(--el-text-color-secondary); display: inline-flex; flex-shrink: 0; }
+.bom-leaf { width: 16px; flex-shrink: 0; }
 .bom-slot { color: var(--el-text-color-secondary); }
 .bom-name { color: var(--el-text-color-primary); }
 .bom-tag { flex-shrink: 0; }
 .bom-chip { font-weight: 400; }
-.bom-sup { color: var(--ph-brand-600); display: inline-flex; align-items: center; }
-.bom-sup-arrow { margin: 0 2px; }
 .bom-spec {
   font-family: var(--ph-font-mono); font-size: var(--ph-font-size-xs);
   color: var(--el-text-color-secondary); background: var(--el-fill-color-light);
   border-radius: var(--ph-radius-xs); padding: 3px 8px; margin: 2px 0 4px 22px;
 }
-.bom-children { border-left: 1px solid var(--el-border-color); margin-left: 7px; padding-left: 14px; }
+.bom-children { margin-left: 7px; padding-left: 16px; }
 </style>

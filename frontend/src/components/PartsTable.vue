@@ -30,13 +30,20 @@ function onDetailChanged() {
   emit('changed')
 }
 
-const props = defineProps<{ supplierId?: number | null; supplierDefaultLead?: number | null }>()
+const props = defineProps<{
+  supplierId?: number | null
+  supplierDefaultLead?: number | null
+  kind?: 'product' | 'part' | null  // 整机/部件大类预筛（供 KPI「整机供应/部件供应」下钻），可被工具栏改
+}>()
 const emit = defineEmits<{ (e: 'changed'): void }>()
 
 const auth = useAuthStore()
 const rows = ref<any[]>([])
 const nodeTypes = ref<any[]>([])
-const filters = reactive({ q: '', node_type_id: null as number | null, status: null as string | null })
+const filters = reactive({
+  q: '', node_type_id: null as number | null, status: null as string | null,
+  kind: (props.kind ?? null) as 'product' | 'part' | null,
+})
 const loading = ref(false)
 const scoped = computed(() => props.supplierId != null)
 // 采购件可为部件(part)或整机(product)：两类分别供筛选/新建下拉与列表标签
@@ -52,6 +59,7 @@ async function load() {
         q: filters.q || undefined,
         node_type_id: filters.node_type_id ?? undefined,
         status: filters.status ?? undefined,
+        kind: filters.kind ?? undefined,
         supplier_id: props.supplierId ?? undefined,
       },
     })).data
@@ -68,6 +76,7 @@ onMounted(async () => {
 })
 watch(filters, () => void load())
 watch(() => props.supplierId, () => void load())
+watch(() => props.kind, (k) => { filters.kind = k ?? null })  // 父级 KPI 下钻驱动大类预筛
 
 async function approve(row: any) {
   await api.post(`/purchased-parts/${row.id}/approve`)
@@ -160,6 +169,11 @@ async function submitCreate() {
 <template>
   <div>
     <div style="display: flex; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; align-items: center">
+      <el-radio-group v-model="filters.kind">
+        <el-radio-button :value="null">全部</el-radio-button>
+        <el-radio-button value="product">整机</el-radio-button>
+        <el-radio-button value="part">部件</el-radio-button>
+      </el-radio-group>
       <el-select v-model="filters.node_type_id" placeholder="类型" clearable style="width: 170px">
         <el-option-group label="整机">
           <el-option v-for="t in assemblyTypes" :key="t.id" :value="t.id" :label="t.name" />

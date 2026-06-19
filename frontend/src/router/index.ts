@@ -14,6 +14,7 @@ export const router = createRouter({
         { path: 'quotations', component: () => import('../pages/Quotes.vue') },
         { path: 'suppliers', component: () => import('../pages/Suppliers.vue') },
         { path: 'parts', redirect: '/suppliers' },
+        { path: 'settings/general', component: () => import('../pages/SettingsGeneral.vue') },
         { path: 'admin/templates', component: () => import('../pages/AdminTemplates.vue') },
         { path: 'admin/import', component: () => import('../pages/AdminImport.vue') },
         { path: 'admin/users', component: () => import('../pages/AdminUsers.vue') },

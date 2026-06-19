@@ -371,7 +371,7 @@ def matched_sku_payload(db: Session, sku: Sku) -> MatchedSku:
 
 def validate_config(
     db: Session, payload: ConfigPayload, *, for_creation: bool = False, lenient: bool = False,
-    type_cache: dict | None = None,
+    type_cache: dict | None = None, skip_dedup: bool = False,
 ) -> tuple[ValidateResult, str | None]:
     """校验配置；完整时返回指纹与命中 SKU。无副作用。
 
@@ -397,7 +397,8 @@ def validate_config(
         return ValidateResult(complete=False, issues=state.issues), None
 
     fingerprint = hashlib.sha256(serial.encode("utf-8")).hexdigest()
-    existing = db.execute(
+    # skip_dedup：仅取摘要名的批量场景（如改名重算）跳过撞名查重 + 现价取数，省去逐 SKU 两次查询
+    existing = None if skip_dedup else db.execute(
         select(Sku).where(Sku.fingerprint == fingerprint)
     ).scalar_one_or_none()
 
@@ -411,6 +412,38 @@ def validate_config(
         matched_sku=matched_sku_payload(db, existing) if existing else None,
     )
     return result, name[:300]
+
+
+def resync_names_for_part(db: Session, part_id: int) -> int:
+    """成品件改名后，重算所有引用它的 SKU 的展示名（"root_type.name（属性/部件摘要）"）。
+    展示名是部件/选项名的快照，改名后会滞后；此处把它与当前名重新对齐，打通实时同步。
+
+    单一真源：复用 reconstruct_payload + validate_config（与创建/体检同一命名逻辑），杜绝漂移。
+    红线安全：name 可改、不入指纹（见本文件顶与 create_sku 注释），sku_code/fingerprint 一概不动。
+    性能：批量预载整树关系 + 共享 type_cache + 会话标识映射（部件/类型跨 SKU 仅查一次），
+    使逐 SKU 校验在内存内跑、无 N+1。返回实际改名的 SKU 数。
+    """
+    from app.services.health_engine import reconstruct_payload  # 延迟导入避免与 health 的环依赖
+
+    sku_ids = list(db.execute(
+        select(SkuConfigNode.sku_id).distinct()
+        .where(SkuConfigNode.purchased_part_id == part_id)
+    ).scalars())
+    if not sku_ids:
+        return 0
+    skus = db.execute(
+        select(Sku).where(Sku.id.in_(sku_ids))
+        .options(selectinload(Sku.nodes).selectinload(SkuConfigNode.attribute_values))
+    ).scalars().all()
+    type_cache: dict = {}
+    changed = 0
+    for sku in skus:
+        _, name = validate_config(db, reconstruct_payload(sku), lenient=True,
+                                  type_cache=type_cache, skip_dedup=True)
+        if name and name != sku.name:
+            sku.name = name
+            changed += 1
+    return changed
 
 
 def _build_nodes(

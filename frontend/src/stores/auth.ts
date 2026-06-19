@@ -8,6 +8,7 @@ export interface UserInfo {
   display_name: string
   role: 'admin' | 'sales'
   can_set_price: boolean
+  preferences?: Record<string, any>
 }
 
 export const useAuthStore = defineStore('auth', {
@@ -26,6 +27,9 @@ export const useAuthStore = defineStore('auth', {
     async fetchMe() {
       const { data } = await api.get('/auth/me')
       this.user = data
+      // 用户偏好随 /auth/me 下发 → 注水偏好 store（懒引用避免循环依赖）
+      const { usePreferencesStore } = await import('./preferences')
+      usePreferencesStore().hydrate()
     },
     logout() {
       localStorage.removeItem('access_token')

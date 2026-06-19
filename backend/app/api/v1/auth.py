@@ -15,7 +15,7 @@ from app.core.security import (
     verify_password,
 )
 from app.models import AppUser
-from app.schemas.auth import LoginIn, RefreshIn, TokenPair, UserOut
+from app.schemas.auth import LoginIn, PreferencesIn, RefreshIn, TokenPair, UserOut
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -69,3 +69,14 @@ def refresh(body: RefreshIn, db: Session = Depends(get_db)) -> TokenPair:
 @router.get("/me", response_model=UserOut)
 def me(user: AppUser = Depends(get_current_user)) -> AppUser:
     return user
+
+
+@router.put("/me/preferences", response_model=dict)
+def update_preferences(
+    body: PreferencesIn, db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
+) -> dict:
+    """保存当前用户的界面偏好（自动保存·全量替换）。仅本人、纯展示偏好，不涉权限/业务数据。"""
+    user.preferences = body.model_dump(exclude_none=True)  # 赋新 dict 触发 JSONB 持久化
+    db.commit()
+    return user.preferences

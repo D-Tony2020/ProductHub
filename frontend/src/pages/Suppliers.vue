@@ -2,9 +2,10 @@
 /** 供应商管理：左导航替换"成品采购件"并吸纳之。
  *  master-detail（供应商列表 + 详情 Tab：概览 / 成品采购件 / 关联成品），
  *  外加"全部采购件"全局搜索模式。供应商 code 已入指纹·不可变（编辑只给 name/联系/采购字段）。 */
-import { Search } from '@element-plus/icons-vue'
+import { Filter, Search } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 
 import { api } from '../api/client'
 import PartsTable from '../components/PartsTable.vue'
@@ -12,6 +13,7 @@ import StatCard from '../components/StatCard.vue'
 import { useAuthStore } from '../stores/auth'
 
 const auth = useAuthStore()
+const router = useRouter()
 const mode = ref<'by_supplier' | 'all_parts'>('by_supplier')
 const suppliers = ref<any[]>([])
 const selected = ref<any | null>(null)
@@ -38,6 +40,38 @@ function selectSupplier(s: any) {
   selected.value = s
   tab.value = 'overview'
 }
+
+// KPI 仪表点击跳转：采购项/整机供应/部件供应 → 成品采购件 Tab(带大类预筛)；关联成品 → 关联成品 Tab
+const partsKind = ref<'product' | 'part' | null>(null)
+function goParts(kind: 'product' | 'part' | null) {
+  partsKind.value = kind
+  tab.value = 'parts'
+}
+
+// 关联成品：用到该供应商的在售 SKU（黑盒经成品件 ∪ 白盒节点标注），支持下钻到产品详情
+const linkedSkus = ref<any[]>([])
+const linkedLoading = ref(false)
+async function loadLinked() {
+  if (!selected.value) return
+  linkedLoading.value = true
+  try {
+    linkedSkus.value = (await api.get(`/suppliers/${selected.value.id}/linked-skus`)).data
+  } finally {
+    linkedLoading.value = false
+  }
+}
+function drillSku(skuId: number) {
+  router.push({ path: '/skus', query: { sku_id: skuId } })  // 下钻：跳产品库并打开该 SKU 详情
+}
+// 并轨：跳产品库并按本供应商（黑∪白·在售）预筛，享完整分面筛选/排序/分页
+function openInLibrary() {
+  if (!selected.value) return
+  router.push({ path: '/skus', query: { supplier: selected.value.id, status: 'active' } })
+}
+// 进入「关联成品」Tab 或切换供应商时按需加载
+watch([tab, () => selected.value?.id], ([t]) => {
+  if (t === 'skus') loadLinked()
+})
 
 // 概览编辑
 const editForm = reactive({ name: '', contact: '', lead_time_days: null as number | null, payment_terms: '', rating: null as number | null })
@@ -148,10 +182,10 @@ async function submitCreate() {
           @click="selectSupplier(s)"
         >
           <div class="sc-top">
-            <span class="sc-name">{{ s.name }}</span>
-            <el-tag v-if="!s.is_active" size="small" type="info">已停用</el-tag>
-            <el-rate v-if="s.rating" :model-value="s.rating" disabled size="small" class="sc-rate" />
+            <span class="sc-name" :title="s.name">{{ s.name }}</span>
+            <el-tag v-if="!s.is_active" size="small" type="info" class="sc-flag">已停用</el-tag>
           </div>
+          <el-rate v-if="s.rating" :model-value="s.rating" disabled size="small" class="sc-rate" />
           <div class="sc-metrics">
             <div class="m"><b>{{ s.procurement_items }}</b><span>采购</span></div>
             <div class="m"><b>{{ s.assembly_count }}</b><span>整机</span></div>
@@ -183,12 +217,24 @@ async function submitCreate() {
           </div>
         </template>
 
-        <!-- 看板指标卡 -->
+        <!-- 看板指标卡（四个均可点击跳转到对应视图） -->
         <div class="dash">
-          <StatCard label="采购项" tone="brand" :value="selected.procurement_items" />
-          <StatCard label="整机供应" tone="info" :value="selected.assembly_count" />
-          <StatCard label="部件供应" tone="warning" :value="selected.component_count" />
-          <StatCard label="关联成品" hint="在售SKU" tone="success" :value="selected.linked_skus" />
+          <StatCard
+            label="采购项" tone="brand" :value="selected.procurement_items" clickable
+            :active="tab === 'parts' && partsKind === null" @click="goParts(null)"
+          />
+          <StatCard
+            label="整机供应" tone="info" :value="selected.assembly_count" clickable
+            :active="tab === 'parts' && partsKind === 'product'" @click="goParts('product')"
+          />
+          <StatCard
+            label="部件供应" tone="warning" :value="selected.component_count" clickable
+            :active="tab === 'parts' && partsKind === 'part'" @click="goParts('part')"
+          />
+          <StatCard
+            label="关联成品" hint="在售SKU" tone="success" :value="selected.linked_skus" clickable
+            :active="tab === 'skus'" @click="tab = 'skus'"
+          />
         </div>
 
         <el-tabs v-model="tab">
@@ -213,12 +259,52 @@ async function submitCreate() {
           <el-tab-pane label="成品采购件" name="parts">
             <PartsTable
               :supplier-id="selected.id" :supplier-default-lead="selected.lead_time_days"
-              @changed="loadSuppliers(selected.id)"
+              :kind="partsKind" @changed="loadSuppliers(selected.id)"
             />
           </el-tab-pane>
 
           <el-tab-pane label="关联成品" name="skus">
-            <el-empty description="P2b 将在此展示用到该供应商的整机 SKU（含白盒来源标注），并支持下钻" :image-size="60" />
+            <div v-loading="linkedLoading">
+              <div class="linked-head">
+                <span class="lh-note">用到该供应商的在售 SKU · 黑盒经成品件 ∪ 白盒节点标注</span>
+                <el-button type="primary" plain :icon="Filter" @click="openInLibrary">
+                  在产品库筛选 / 排序（{{ selected.linked_skus }}）→
+                </el-button>
+              </div>
+              <el-table
+                v-if="linkedSkus.length" :data="linkedSkus" class="linked-tbl"
+                @row-click="(r: any) => drillSku(r.sku_id)"
+              >
+                <el-table-column prop="sku_code" label="SKU 编码" width="160">
+                  <template #default="{ row }">
+                    <el-button text type="primary" class="cell-link" @click.stop="drillSku(row.sku_id)">
+                      {{ row.sku_code }}
+                    </el-button>
+                  </template>
+                </el-table-column>
+                <el-table-column prop="name" label="名称 / 规格摘要" min-width="240" show-overflow-tooltip />
+                <el-table-column label="该供应商在此 SKU 的用法" min-width="220">
+                  <template #default="{ row }">
+                    <el-tag
+                      v-for="p in row.via_blackbox" :key="p" size="small" type="primary"
+                      effect="plain" class="src-tag"
+                    >黑盒 · {{ p }}</el-tag>
+                    <el-tag v-if="row.via_whitebox" size="small" type="success" effect="plain" class="src-tag">
+                      白盒来源标注
+                    </el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column label="" width="90" align="right">
+                  <template #default="{ row }">
+                    <el-button size="small" text type="primary" @click.stop="drillSku(row.sku_id)">下钻 →</el-button>
+                  </template>
+                </el-table-column>
+              </el-table>
+              <el-empty v-else :image-size="60" description="暂无用到该供应商的在售 SKU" />
+              <p style="color: var(--el-text-color-secondary); font-size: 12px; margin-top: 8px">
+                点任意行可<b>下钻</b>到产品详情；需筛选 / 排序 / 翻页请用上方「在产品库」入口。
+              </p>
+            </div>
           </el-tab-pane>
         </el-tabs>
       </el-card>
@@ -269,9 +355,10 @@ async function submitCreate() {
 .sup-card:hover { border-color: var(--el-color-primary-light-5); background: var(--el-fill-color-light); }
 .sup-card.active { border-color: var(--el-color-primary); background: var(--el-color-primary-light-9); }
 .sup-card.inactive { opacity: 0.55; }
-.sc-top { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
-.sc-name { font-size: 14px; font-weight: 600; }
-.sc-rate { height: 14px; }
+.sc-top { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.sc-name { font-size: 14px; font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sc-flag { flex-shrink: 0; }
+.sc-rate { height: 14px; margin: -2px 0 6px; }
 .sc-metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
 .sc-metrics .m { text-align: center; background: var(--el-fill-color); border-radius: 5px; padding: 4px 2px; }
 .sc-metrics .m b { display: block; font-size: 15px; font-weight: 600; color: var(--el-color-primary); line-height: 1.2; font-variant-numeric: tabular-nums; }
@@ -279,4 +366,15 @@ async function submitCreate() {
 
 /* 右侧看板指标卡（StatCard 统一） */
 .dash { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
+
+/* 关联成品：桥接产品库的入口条 + 表整行可下钻 */
+.linked-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--el-border-color-lighter);
+}
+.lh-note { font-size: 12px; color: var(--el-text-color-secondary); }
+.linked-tbl :deep(.el-table__row) { cursor: pointer; }
+.cell-link { padding: 0; height: auto; font-weight: 500; font-family: var(--ph-font-mono); }
+.cell-link :deep(span) { white-space: normal; }
+.src-tag { margin: 2px 4px 2px 0; }
 </style>
