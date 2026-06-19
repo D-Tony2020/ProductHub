@@ -1,11 +1,24 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.v1 import auth, config_api, drafts, imports_api, parts, prices, quotes, skus, template, users
+from app.core.logging import get_logger, setup_logging
 from app.services.config_engine import IncompleteConfigError
 
-app = FastAPI(title="ProductHub 产品中台", version="0.1.0")
+setup_logging()  # 结构化 JSON 日志（LOG_LEVEL 控级，默认 INFO）；须在 app 创建前
+_log = get_logger()
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    _log.info("producthub backend started", extra={"event": "startup"})
+    yield
+
+
+app = FastAPI(title="ProductHub 产品中台", version="0.1.0", lifespan=_lifespan)
 
 # 开发期 CORS；生产由 Caddy 同源反代，收紧为实际域名
 app.add_middleware(

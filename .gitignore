@@ -26,6 +26,7 @@ exports/
 backups/
 *.dump
 backend/uploads/
+backend/pytest_output.txt
 
 # 编辑器/系统
 .vscode/

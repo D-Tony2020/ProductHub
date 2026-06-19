@@ -34,6 +34,13 @@ services:
       sh -c "alembic upgrade head &&
              uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2"
 
+  # 前端构建：一次性容器，npm 编译 → 产物写入共享卷 frontend_dist（部署可复现，无需主机预构建）。
+  frontend:
+    build:
+      context: ../frontend
+    volumes:
+      - frontend_dist:/srv/frontend
+
   caddy:
     image: caddy:2
     restart: unless-stopped
@@ -44,13 +51,17 @@ services:
       SITE_DOMAIN: ${SITE_DOMAIN:?set in .env.prod}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - ../frontend/dist:/srv/frontend:ro
+      - frontend_dist:/srv/frontend:ro
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
-      - app
+      app:
+        condition: service_started
+      frontend:
+        condition: service_completed_successfully
 
 volumes:
   pgdata:
   caddy_data:
   caddy_config:
+  frontend_dist:
