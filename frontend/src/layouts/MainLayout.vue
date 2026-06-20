@@ -13,6 +13,9 @@ import { useQuoteCartStore } from '../stores/quoteCart'
 const auth = useAuthStore()
 const cart = useQuoteCartStore()
 const router = useRouter()
+// 品牌参数化（构建期注入，支持多租户白标）：默认北京合胜+显示 logo；VITE_SHOW_LOGO=false 则隐藏 logo
+const brandName = import.meta.env.VITE_BRAND_NAME || '北京合胜'
+const showLogo = import.meta.env.VITE_SHOW_LOGO !== 'false'
 const route = useRoute()
 const searchText = ref('')
 
@@ -79,8 +82,8 @@ function logout() {
   <el-container style="height: 100vh">
     <el-aside :width="navCollapsed ? '64px' : '210px'" class="aside" :class="{ collapsed: navCollapsed }">
       <div class="brand">
-        <div class="logo"><img :src="logoUrl" class="logo-img" alt="ProductHub" /></div>
-        <div v-show="!navCollapsed" class="brand-text">ProductHub<br /><small>北京合胜 · 产品中台</small></div>
+        <div v-if="showLogo" class="logo"><img :src="logoUrl" class="logo-img" alt="ProductHub" /></div>
+        <div v-show="!navCollapsed" class="brand-text">ProductHub<br /><small>{{ brandName }} · 产品中台</small></div>
       </div>
       <el-menu
         :default-active="route.path" router class="nav-menu"

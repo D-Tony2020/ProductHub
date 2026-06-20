@@ -10,6 +10,7 @@ const router = useRouter()
 const username = ref('')
 const password = ref('')
 const loading = ref(false)
+const brandName = import.meta.env.VITE_BRAND_NAME || '北京合胜'  // 多租户白标：构建期注入
 
 async function submit() {
   if (!username.value || !password.value) return
@@ -29,7 +30,7 @@ async function submit() {
   <div class="login-bg">
     <el-card style="width: 380px">
       <h2 style="text-align: center">ProductHub 产品中台</h2>
-      <p style="text-align: center; color: var(--el-text-color-secondary)">北京合胜 · 配置选型与报价</p>
+      <p style="text-align: center; color: var(--el-text-color-secondary)">{{ brandName }} · 配置选型与报价</p>
       <el-form @submit.prevent="submit">
         <el-form-item>
           <el-input v-model="username" placeholder="用户名" size="large" autofocus />

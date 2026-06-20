@@ -6,6 +6,10 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
+# 多租户白标：构建期注入品牌（Vite 读取 VITE_* 环境变量进 import.meta.env）。默认=北京合胜+显示 logo。
+ARG VITE_BRAND_NAME=北京合胜
+ARG VITE_SHOW_LOGO=true
+ENV VITE_BRAND_NAME=$VITE_BRAND_NAME VITE_SHOW_LOGO=$VITE_SHOW_LOGO
 RUN npm run build
 # 一次性：清空并把 dist 复制进挂载的共享卷后退出
 CMD ["sh", "-c", "rm -rf /srv/frontend/* && cp -r /app/dist/. /srv/frontend/ && echo 'frontend dist published to /srv/frontend'"]
