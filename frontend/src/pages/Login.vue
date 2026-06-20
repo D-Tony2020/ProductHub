@@ -28,7 +28,7 @@ async function submit() {
 
 <template>
   <div class="login-bg">
-    <el-card style="width: 380px">
+    <el-card style="width: 100%; max-width: 380px">
       <h2 style="text-align: center">ProductHub 产品中台</h2>
       <p style="text-align: center; color: var(--el-text-color-secondary)">{{ brandName }} · 配置选型与报价</p>
       <el-form @submit.prevent="submit">

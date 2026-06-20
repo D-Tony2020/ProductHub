@@ -3,7 +3,7 @@
  *  P1：统计与计数走聚合端点，检索复用 /skus，零数据层改动。 */
 import { CopyDocument, EditPen, Goods, Grid, List, Operation, Right, Search, Setting } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { api } from '../api/client'
@@ -23,6 +23,18 @@ const pref = usePreferencesStore()
 const cart = useQuoteCartStore()
 const router = useRouter()
 const route = useRoute()
+
+// 移动端适配：≤768px 强制卡片视图（隐藏 1100px+ 宽表格）、品类树面板可折叠，消除横向溢出
+const isMobile = ref(false)
+const mobileFilterOpen = ref(false)
+let mq: MediaQueryList | null = null
+const onMqChange = (e: MediaQueryListEvent) => { isMobile.value = e.matches }
+onMounted(() => {
+  mq = window.matchMedia('(max-width: 768px)')
+  isMobile.value = mq.matches
+  mq.addEventListener('change', onMqChange)
+})
+onUnmounted(() => { mq?.removeEventListener('change', onMqChange) })
 
 const filters = reactive({
   q: '', root_type_id: null as number | null, status: null as string | null,
@@ -643,8 +655,13 @@ function priceRange(t: any): string | null {
 
   <el-row :gutter="12">
     <!-- 左栏：分面检索面板（快捷视图 + 品类树 + 可自定义分面） -->
-    <el-col :span="6">
+    <el-col :span="6" :xs="24">
+      <el-button
+        v-if="isMobile" text class="mobile-filter-toggle"
+        @click="mobileFilterOpen = !mobileFilterOpen"
+      >{{ mobileFilterOpen ? '收起筛选 ▲' : '筛选 / 品类树 ▼' }}</el-button>
       <SkuFilterPanel
+        v-show="!isMobile || mobileFilterOpen"
         :filters="filters" :stats="stats" :tree="tree" :suppliers="suppliers"
         :filter-attrs="filterAttrs" :facets="facets" :active-quick="activeQuick" :currency="currency"
         @quick="selectQuick" @category="selectCategory"
@@ -654,13 +671,13 @@ function priceRange(t: any): string | null {
     </el-col>
 
     <!-- 主区 -->
-    <el-col :span="18">
+    <el-col :span="18" :xs="24">
       <el-card>
         <div class="main-tools">
-          <el-input v-model="filters.q" placeholder="SKU 编码 / 名称" clearable style="width: 240px">
+          <el-input v-model="filters.q" placeholder="SKU 编码 / 名称" clearable class="tools-search">
             <template #prefix><el-icon><Search /></el-icon></template>
           </el-input>
-          <span style="flex: 1"></span>
+          <span class="tools-spacer"></span>
           <el-tooltip content="显示设置（分面 / 默认视图 / 每页）" placement="top">
             <el-button :icon="Setting" @click="router.push('/settings/general')" />
           </el-tooltip>
@@ -680,8 +697,8 @@ function priceRange(t: any): string | null {
           @remove="removeChip" @clear-all="clearAllFilters"
         />
 
-        <!-- 卡片视图 -->
-        <div v-if="viewMode === 'card'" v-loading="loading">
+        <!-- 卡片视图（手机强制卡片，隐藏 1100px+ 宽表格） -->
+        <div v-if="isMobile || viewMode === 'card'" v-loading="loading">
           <div v-if="rows.length" class="card-grid">
             <el-card v-for="row in displayRows" :key="row.id" shadow="hover" body-style="padding: 10px"
                      class="sku-card" :class="{ retired: row.status !== 'active' }" @click="openDetailById(row.id)">
@@ -1013,6 +1030,18 @@ function priceRange(t: any): string | null {
   margin-bottom: 12px;
 }
 .main-tools { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; }
+.tools-search { width: 240px; }
+.tools-spacer { flex: 1; }
+.mobile-filter-toggle { width: 100%; justify-content: center; margin-bottom: 8px; border: 1px dashed var(--el-border-color); }
+
+/* ── 移动端（≤768px）：统计带降列、工具条换行、消除横向溢出（左右栏由 :xs=24 堆叠） ── */
+@media (max-width: 768px) {
+  .stat-band { grid-template-columns: repeat(2, 1fr); }
+  .main-tools { flex-wrap: wrap; }
+  .tools-search { width: 100%; }
+  .tools-spacer { display: none; }
+  .home-toggle { flex-wrap: wrap; gap: 8px; }
+}
 
 .card-grid {
   display: grid;

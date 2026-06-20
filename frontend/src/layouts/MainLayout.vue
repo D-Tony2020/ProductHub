@@ -2,7 +2,7 @@
 import {
   Box, Document, Expand, Fold, Goods, Search, Setting, ShoppingCart,
 } from '@element-plus/icons-vue'
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { api } from '../api/client'
@@ -35,6 +35,25 @@ const navCollapsed = ref(localStorage.getItem('ph-nav-collapsed') === '1')
 function toggleNav() {
   navCollapsed.value = !navCollapsed.value
   localStorage.setItem('ph-nav-collapsed', navCollapsed.value ? '1' : '0')
+}
+
+// 移动端适配：≤768px 视为手机——侧栏转覆盖式抽屉（汉堡唤出/遮罩关闭/点菜单自动收起）
+const isMobile = ref(false)
+const mobileNavOpen = ref(false)
+let mq: MediaQueryList | null = null
+function applyMq(matches: boolean) {
+  isMobile.value = matches
+  if (!matches) mobileNavOpen.value = false
+}
+const onMqChange = (e: MediaQueryListEvent) => applyMq(e.matches)
+onMounted(() => {
+  mq = window.matchMedia('(max-width: 768px)')
+  applyMq(mq.matches)
+  mq.addEventListener('change', onMqChange)
+})
+onUnmounted(() => { mq?.removeEventListener('change', onMqChange) })
+function onNavSelect() {
+  if (isMobile.value) mobileNavOpen.value = false
 }
 
 const avatarText = computed(() => auth.user?.display_name?.[0] ?? '·')
@@ -80,14 +99,19 @@ function logout() {
 
 <template>
   <el-container style="height: 100vh">
-    <el-aside :width="navCollapsed ? '64px' : '210px'" class="aside" :class="{ collapsed: navCollapsed }">
+    <el-aside
+      :width="isMobile ? '248px' : (navCollapsed ? '64px' : '210px')"
+      class="aside"
+      :class="{ collapsed: navCollapsed && !isMobile, mobile: isMobile, 'mobile-open': isMobile && mobileNavOpen }"
+    >
       <div class="brand">
         <div v-if="showLogo" class="logo"><img :src="logoUrl" class="logo-img" alt="ProductHub" /></div>
-        <div v-show="!navCollapsed" class="brand-text">ProductHub<br /><small>{{ brandName }} · 产品中台</small></div>
+        <div v-show="!navCollapsed || isMobile" class="brand-text">ProductHub<br /><small>{{ brandName }} · 产品中台</small></div>
       </div>
       <el-menu
         :default-active="route.path" router class="nav-menu"
-        :collapse="navCollapsed" :collapse-transition="false"
+        :collapse="navCollapsed && !isMobile" :collapse-transition="false"
+        @select="onNavSelect"
       >
         <el-menu-item-group title="业务">
           <el-menu-item index="/skus"><el-icon><Goods /></el-icon><template #title>产品库</template></el-menu-item>
@@ -114,33 +138,40 @@ function logout() {
         </el-tooltip>
       </div>
     </el-aside>
+    <!-- 移动端抽屉遮罩 -->
+    <div v-if="isMobile && mobileNavOpen" class="mobile-backdrop" @click="mobileNavOpen = false" />
     <el-container>
       <el-header class="topbar">
-        <el-autocomplete
-          v-model="searchText"
-          :fetch-suggestions="fetchSuggestions"
-          placeholder="搜索 SKU 编码 / 名称 / 成品件…"
-          style="width: 360px"
-          clearable
-          @select="onSelectSuggestion as any"
-        >
-          <template #prefix><el-icon><Search /></el-icon></template>
-          <template #default="{ item }">
-            <el-tag size="small" style="margin-right: 6px">{{ item.kind }}</el-tag>
-            <span>{{ item.value }}</span>
-          </template>
-        </el-autocomplete>
+        <el-button v-if="isMobile" text class="hamburger" @click="mobileNavOpen = true">
+          <el-icon :size="22"><Expand /></el-icon>
+        </el-button>
+        <div class="topbar-search">
+          <el-autocomplete
+            v-model="searchText"
+            :fetch-suggestions="fetchSuggestions"
+            placeholder="搜索 SKU 编码 / 名称 / 成品件…"
+            style="width: 100%"
+            clearable
+            @select="onSelectSuggestion as any"
+          >
+            <template #prefix><el-icon><Search /></el-icon></template>
+            <template #default="{ item }">
+              <el-tag size="small" style="margin-right: 6px">{{ item.kind }}</el-tag>
+              <span>{{ item.value }}</span>
+            </template>
+          </el-autocomplete>
+        </div>
         <div class="topbar-right">
-          <el-badge :value="cart.itemCount" :hidden="!cart.itemCount" style="margin-right: 18px">
+          <el-badge :value="cart.itemCount" :hidden="!cart.itemCount" class="cart-badge">
             <el-button text @click="router.push('/quotations')">
-              <el-icon size="20"><Document /></el-icon>&nbsp;当前报价单
+              <el-icon size="20"><Document /></el-icon><span class="btn-label">&nbsp;当前报价单</span>
             </el-button>
           </el-badge>
           <el-dropdown>
             <span class="user-trigger">
               <span class="avatar">{{ avatarText }}</span>
               <span class="user-name">{{ auth.user?.display_name ?? '…' }}</span>
-              <el-tag size="small" type="info" effect="plain">
+              <el-tag size="small" type="info" effect="plain" class="role-tag">
                 {{ auth.isAdmin ? '管理员' : '业务员' }}
               </el-tag>
             </span>
@@ -212,7 +243,9 @@ function logout() {
   box-shadow: var(--ph-shadow-sm);
   position: relative; z-index: 10;
 }
+.topbar-search { width: 360px; }
 .topbar-right { display: flex; align-items: center; }
+.cart-badge { margin-right: 18px; }
 .user-trigger { display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 14px; outline: none; }
 .avatar {
   width: 28px; height: 28px; border-radius: 50%;
@@ -221,4 +254,26 @@ function logout() {
   font-size: 13px; font-weight: 500;
 }
 .user-name { color: var(--el-text-color-regular); }
+
+/* ── 移动端（≤768px）：侧栏转覆盖式抽屉 + 顶栏精简，消除横向溢出 ── */
+.mobile-backdrop {
+  position: fixed; inset: 0; z-index: 1999;
+  background: rgba(0, 0, 0, 0.45);
+}
+@media (max-width: 768px) {
+  .aside.mobile {
+    position: fixed; top: 0; bottom: 0; left: -264px; z-index: 2000;
+    transition: left var(--ph-duration-base) var(--ph-ease);
+    box-shadow: var(--ph-shadow-lg);
+  }
+  .aside.mobile.mobile-open { left: 0; }
+  .aside-foot { display: none; }
+  .topbar { padding: 0 10px; gap: 8px; }
+  .hamburger { flex-shrink: 0; padding: 4px; }
+  .topbar-search { width: auto; flex: 1; min-width: 0; }
+  .cart-badge { margin-right: 6px; }
+  .topbar-right .btn-label { display: none; }
+  .user-name { display: none; }
+  .role-tag { display: none; }
+}
 </style>
