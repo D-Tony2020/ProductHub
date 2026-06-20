@@ -1,0 +1,121 @@
+# 单机自管部署（测试期）：app + postgres(自管 PITR) + 前端构建 + caddy 同机。
+# 与 docker-compose.prod.yml 的差异：postgres 改用 pgbackrest 镜像、加 PG 调优与归档、
+# 全部服务加资源上限（防 app 与 DB 互抢、防 OOM）、备份仓与 WAL spool 独立卷。
+# 使用前：复制 .env.prod.example→.env.prod 填密钥；复制 pgbackrest.conf.example→pgbackrest.conf。
+name: producthub
+
+services:
+  postgres:
+    build:
+      context: .
+      dockerfile: postgres-pgbackrest.Dockerfile
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: producthub
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env.prod}
+      POSTGRES_DB: producthub
+    command:
+      - postgres
+      - -c
+      - shared_buffers=1GB
+      - -c
+      - effective_cache_size=2GB
+      - -c
+      - work_mem=16MB
+      - -c
+      - maintenance_work_mem=256MB
+      - -c
+      - max_connections=100
+      - -c
+      - wal_level=replica
+      - -c
+      - archive_mode=on
+      - -c
+      - archive_command=pgbackrest --stanza=producthub archive-push %p
+      - -c
+      - archive_timeout=60
+      - -c
+      - max_wal_size=2GB
+      - -c
+      - min_wal_size=256MB
+      - -c
+      - random_page_cost=1.1
+      - -c
+      - effective_io_concurrency=200
+      - -c
+      - timezone=Asia/Shanghai
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - pgbackrest_repo:/var/lib/pgbackrest
+      - pgbackrest_spool:/var/spool/pgbackrest
+      - ./pgbackrest.conf:/etc/pgbackrest/pgbackrest.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U producthub -d producthub"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 2G
+
+  app:
+    build:
+      context: ../backend
+    restart: unless-stopped
+    environment:
+      PRODUCTHUB_DATABASE_URL: postgresql+psycopg://producthub:${POSTGRES_PASSWORD}@postgres:5432/producthub
+      PRODUCTHUB_JWT_SECRET: ${JWT_SECRET:?set in .env.prod}
+      PRODUCTHUB_DEFAULT_CURRENCY: ${DEFAULT_CURRENCY:-USD}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+
+  frontend:
+    build:
+      context: ../frontend
+    volumes:
+      - frontend_dist:/srv/frontend
+    # 一次性构建容器：vite 编译较吃内存，单机务必先配 2-4G swap，或在别处预构建镜像（见方案文档）。
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      SITE_DOMAIN: ${SITE_DOMAIN:?set in .env.prod}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - frontend_dist:/srv/frontend:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      app:
+        condition: service_started
+      frontend:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+
+volumes:
+  pgdata:
+  pgbackrest_repo:
+  pgbackrest_spool:
+  frontend_dist:
+  caddy_data:
+  caddy_config:

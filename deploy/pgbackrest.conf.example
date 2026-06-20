@@ -1,0 +1,26 @@
+; pgBackRest 配置（复制为 pgbackrest.conf，由 compose 挂载进 postgres 容器 /etc/pgbackrest/）。
+; 单机自管 PITR：连续 WAL 归档 + 全量/增量基础备份 + 保留 + 时点恢复。
+[global]
+repo1-path=/var/lib/pgbackrest
+repo1-retention-full=4            ; 保留 4 个全量（配合每周全量=约 1 个月）
+repo1-retention-diff=8
+start-fast=y
+compress-type=zst                 ; 压缩省空间省带宽
+process-max=2
+archive-async=y                   ; 异步归档：高峰不阻塞主库，降 RPO 抖动
+spool-path=/var/spool/pgbackrest
+; 控制 WAL 归档队列上限，防异常时塞满磁盘（关键安全阀）
+archive-push-queue-max=2GiB
+
+; ===== 强烈建议：把备份仓推到对象存储(异地)。单机本地仓在"机器损毁"时与数据同归于尽！=====
+; 启用下面任一 OSS/S3 仓后，可把 repo1-path 改为 repo2 或直接将 repo1 设为 s3 类型。
+; repo1-type=s3
+; repo1-s3-endpoint=oss-cn-beijing.aliyuncs.com   ; 阿里云 OSS 的 S3 兼容端点(按地域)
+; repo1-s3-bucket=producthub-backups
+; repo1-s3-region=cn-beijing
+; repo1-s3-key=<只写该桶的子账号AK>
+; repo1-s3-key-secret=<SK>
+; repo1-s3-uri-style=path                          ; OSS/COS 多需 path 风格，按厂商核
+
+[producthub]
+pg1-path=/var/lib/postgresql/data                  ; 须与 postgres 容器内 PGDATA 一致
