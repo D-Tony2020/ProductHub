@@ -1,0 +1,130 @@
+# 双租户 HTTP 内测栈（备案前 IP 浏览器内测用）。与生产 single.yml 物理隔离（独立 project/卷）。
+# 一台 PostgreSQL(两库 producthub / producthub_b) + 两 app + 两前端 + 一 Caddy(8080/8081)。
+#   A 套=北京合胜  :8080  库 producthub
+#   B 套=余姚宇盛  :8081  库 producthub_b（去 logo，VITE 构建期注入品牌）
+# 数据完全隔离、互不可见。复用已建镜像 producthub-app/-frontend/-postgres，仅新建余姚宇盛前端。
+# 内测特性：纯 HTTP（无自动 HTTPS）、无 pgbackrest 归档（内测数据可弃）、2C2G 调小、单 worker。
+# 起法：docker compose --env-file deploy/.env.prod -f deploy/docker-compose.beta.yml up -d
+name: producthub-beta
+
+services:
+  postgres:
+    image: producthub-postgres:latest
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: producthub
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env.prod}
+      POSTGRES_DB: producthub
+    command:
+      - postgres
+      - -c
+      - shared_buffers=256MB
+      - -c
+      - effective_cache_size=768MB
+      - -c
+      - work_mem=8MB
+      - -c
+      - maintenance_work_mem=64MB
+      - -c
+      - max_connections=50
+      - -c
+      - timezone=Asia/Shanghai
+    volumes:
+      - pgdata_beta:/var/lib/postgresql/data
+      - ./beta-initdb.sql:/docker-entrypoint-initdb.d/10-tenant-b.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U producthub -d producthub"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+
+  app_a:
+    image: producthub-app:latest
+    restart: unless-stopped
+    environment:
+      PRODUCTHUB_DATABASE_URL: postgresql+psycopg://producthub:${POSTGRES_PASSWORD}@postgres:5432/producthub
+      PRODUCTHUB_JWT_SECRET: ${JWT_SECRET:?set in .env.prod}
+      PRODUCTHUB_DEFAULT_CURRENCY: ${DEFAULT_CURRENCY:-USD}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 420M
+
+  app_b:
+    image: producthub-app:latest
+    restart: unless-stopped
+    environment:
+      PRODUCTHUB_DATABASE_URL: postgresql+psycopg://producthub:${POSTGRES_PASSWORD}@postgres:5432/producthub_b
+      PRODUCTHUB_JWT_SECRET: ${JWT_SECRET:?set in .env.prod}
+      PRODUCTHUB_DEFAULT_CURRENCY: ${DEFAULT_CURRENCY:-USD}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 420M
+
+  # A 套前端：复用已建镜像（北京合胜），一次性发布静态到卷
+  frontend_a:
+    image: producthub-frontend:latest
+    volumes:
+      - frontend_dist_a:/srv/frontend
+
+  # B 套前端：用余姚宇盛品牌参数新建（去 logo）
+  frontend_b:
+    build:
+      context: ../frontend
+      args:
+        VITE_BRAND_NAME: "余姚宇盛"
+        VITE_SHOW_LOGO: "false"
+    volumes:
+      - frontend_dist_b:/srv/frontend
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+      - "8081:8081"
+    volumes:
+      - ./Caddyfile.beta:/etc/caddy/Caddyfile:ro
+      - frontend_dist_a:/srv/frontend_a:ro
+      - frontend_dist_b:/srv/frontend_b:ro
+      - caddy_beta_data:/data
+      - caddy_beta_config:/config
+    depends_on:
+      app_a:
+        condition: service_started
+      app_b:
+        condition: service_started
+      frontend_a:
+        condition: service_completed_successfully
+      frontend_b:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+volumes:
+  pgdata_beta:
+  frontend_dist_a:
+  frontend_dist_b:
+  caddy_beta_data:
+  caddy_beta_config:
