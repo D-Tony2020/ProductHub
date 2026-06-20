@@ -9,7 +9,9 @@ COPY alembic ./alembic
 COPY alembic.ini ./
 COPY scripts ./scripts
 
-RUN pip install .
+# pip 镜像（默认阿里云）：解决国内服务器直连 PyPI 龟速（~15kB/s）；非国内部署可 --build-arg PIP_INDEX=<官方源> 覆盖
+ARG PIP_INDEX=https://mirrors.aliyun.com/pypi/simple/
+RUN pip install -i "$PIP_INDEX" .
 
 EXPOSE 8000
 # 发布流程：先跑迁移再起服务（见 deploy/docker-compose.prod.yml command）
