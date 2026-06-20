@@ -400,7 +400,7 @@ function typeName(id: number) {
 
 <template>
   <el-row :gutter="12">
-    <el-col :span="6">
+    <el-col :span="6" :xs="24">
       <el-card>
         <template #header>
           <div style="display: flex; justify-content: space-between; align-items: center">
@@ -444,7 +444,7 @@ function typeName(id: number) {
       </el-card>
     </el-col>
 
-    <el-col :span="18">
+    <el-col :span="18" :xs="24">
       <el-card v-if="selected">
         <template #header>
           <div style="display: flex; justify-content: space-between; align-items: center">

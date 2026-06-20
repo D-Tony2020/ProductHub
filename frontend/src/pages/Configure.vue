@@ -657,9 +657,9 @@ const serverComplete = computed(() => result.value?.complete === true)
   </div>
 
   <!-- 三栏看板 -->
-  <el-row v-else :gutter="12" style="height: calc(100vh - 110px)">
+  <el-row v-else :gutter="12" class="cfg-row" style="height: calc(100vh - 110px)">
     <!-- 左：产品构成树 -->
-    <el-col :span="5" style="height: 100%">
+    <el-col :span="5" :xs="24" style="height: 100%">
       <el-card style="height: 100%; overflow: auto">
         <template #header>产品构成</template>
         <el-tree
@@ -681,7 +681,7 @@ const serverComplete = computed(() => result.value?.complete === true)
     </el-col>
 
     <!-- 中：当前节点编辑区 -->
-    <el-col :span="12" style="height: 100%">
+    <el-col :span="12" :xs="24" style="height: 100%">
       <el-card style="height: 100%; overflow: auto">
         <template #header>
           <el-breadcrumb separator=">">
@@ -787,7 +787,7 @@ const serverComplete = computed(() => result.value?.complete === true)
             </el-card>
 
             <el-row :gutter="12">
-              <el-col v-for="slot in ungroupedSlots" :key="slot.id" :span="12" style="margin-bottom: 12px">
+              <el-col v-for="slot in ungroupedSlots" :key="slot.id" :span="12" :xs="24" style="margin-bottom: 12px">
                 <el-card shadow="never">
                   <template #header>
                     <span>
@@ -830,7 +830,7 @@ const serverComplete = computed(() => result.value?.complete === true)
     </el-col>
 
     <!-- 右：进度 / 命中 / 动作 -->
-    <el-col :span="7" style="height: 100%">
+    <el-col :span="7" :xs="24" style="height: 100%">
       <el-card style="height: 100%; overflow: auto">
         <template #header>{{ partSpecId ? '部件规格' : '配置摘要' }}</template>
 
@@ -987,4 +987,10 @@ const serverComplete = computed(() => result.value?.complete === true)
   line-height: 1; user-select: none; flex-shrink: 0;
 }
 .drag-handle:active { cursor: grabbing; }
+/* 移动端：三栏堆叠后取消固定高度（!important 覆盖内联），让内容自然流动、页面整体滚动 */
+@media (max-width: 768px) {
+  .cfg-row { height: auto !important; }
+  .cfg-row > .el-col { height: auto !important; }
+  .cfg-row :deep(.el-card) { height: auto !important; }
+}
 </style>

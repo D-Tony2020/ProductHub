@@ -120,7 +120,7 @@ async function duplicateQuote(q: any) {
 
 <template>
   <el-row :gutter="12">
-    <el-col :span="7">
+    <el-col :span="7" :xs="24">
       <el-card>
         <template #header>
           <div style="display: flex; justify-content: space-between; align-items: center">
@@ -151,7 +151,7 @@ async function duplicateQuote(q: any) {
       </el-card>
     </el-col>
 
-    <el-col :span="17">
+    <el-col :span="17" :xs="24">
       <el-card v-if="current">
         <template #header>
           <div style="display: flex; justify-content: space-between; align-items: center">

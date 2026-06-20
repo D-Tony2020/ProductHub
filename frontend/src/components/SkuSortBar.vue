@@ -69,4 +69,9 @@ const emit = defineEmits<{
   margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--el-border-color-lighter);
 }
 .sb-chips-lbl { font-size: 12px; color: var(--el-text-color-secondary); }
+/* 移动端：单行放不下时换行，标签不被字裂 */
+@media (max-width: 768px) {
+  .sb-row { flex-wrap: wrap; }
+  .sb-count, .sb-lbl { white-space: nowrap; }
+}
 </style>

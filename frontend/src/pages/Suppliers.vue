@@ -167,7 +167,7 @@ async function submitCreate() {
 
   <!-- 按供应商：master-detail -->
   <el-row v-else :gutter="12">
-    <el-col :span="6">
+    <el-col :span="6" :xs="24">
       <el-card body-style="padding: 12px">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px">
           <span style="font-size: 13px; color: var(--el-text-color-secondary)">供应商</span>
@@ -197,7 +197,7 @@ async function submitCreate() {
       </el-card>
     </el-col>
 
-    <el-col :span="18">
+    <el-col :span="18" :xs="24">
       <el-card v-if="selected">
         <template #header>
           <div style="display: flex; justify-content: space-between; align-items: center">
@@ -366,6 +366,9 @@ async function submitCreate() {
 
 /* 右侧看板指标卡（StatCard 统一） */
 .dash { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
+@media (max-width: 768px) {
+  .dash, .sc-metrics { grid-template-columns: repeat(2, 1fr); }
+}
 
 /* 关联成品：桥接产品库的入口条 + 表整行可下钻 */
 .linked-head {
