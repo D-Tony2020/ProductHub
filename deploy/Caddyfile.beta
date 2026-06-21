@@ -8,6 +8,9 @@
 	handle /healthz {
 		reverse_proxy app_a:8000
 	}
+	handle /readyz {
+		reverse_proxy app_a:8000
+	}
 	handle {
 		root * /srv/frontend_a
 		try_files {path} /index.html
@@ -21,6 +24,9 @@
 		reverse_proxy app_b:8000
 	}
 	handle /healthz {
+		reverse_proxy app_b:8000
+	}
+	handle /readyz {
 		reverse_proxy app_b:8000
 	}
 	handle {

@@ -7,10 +7,18 @@
 # 起法：docker compose --env-file deploy/.env.prod -f deploy/docker-compose.beta.yml up -d
 name: producthub-beta
 
+# 日志轮转（2C2G 命门：docker json-file 默认无上限，磁盘写满会拖垮全栈）
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   postgres:
     image: producthub-postgres:latest
     restart: unless-stopped
+    logging: *default-logging
     environment:
       POSTGRES_USER: producthub
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env.prod}
@@ -45,6 +53,7 @@ services:
   app_a:
     image: producthub-app:latest
     restart: unless-stopped
+    logging: *default-logging
     environment:
       PRODUCTHUB_DATABASE_URL: postgresql+psycopg://producthub:${POSTGRES_PASSWORD}@postgres:5432/producthub
       PRODUCTHUB_JWT_SECRET: ${JWT_SECRET:?set in .env.prod}
@@ -64,6 +73,7 @@ services:
   app_b:
     image: producthub-app:latest
     restart: unless-stopped
+    logging: *default-logging
     environment:
       PRODUCTHUB_DATABASE_URL: postgresql+psycopg://producthub:${POSTGRES_PASSWORD}@postgres:5432/producthub_b
       PRODUCTHUB_JWT_SECRET: ${JWT_SECRET:?set in .env.prod}
@@ -99,6 +109,7 @@ services:
   caddy:
     image: caddy:2
     restart: unless-stopped
+    logging: *default-logging
     ports:
       - "8080:8080"
       - "8081:8081"

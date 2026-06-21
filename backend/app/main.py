@@ -4,7 +4,10 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from sqlalchemy import text
+
 from app.api.v1 import auth, config_api, drafts, imports_api, parts, prices, quotes, skus, template, users
+from app.core.db import SessionLocal
 from app.core.logging import get_logger, setup_logging
 from app.services.config_engine import IncompleteConfigError
 
@@ -43,7 +46,25 @@ def incomplete_config_handler(request: Request, exc: IncompleteConfigError) -> J
 
 @app.get("/healthz")
 def healthz() -> dict:
+    """浅层存活探针：进程在就返回 ok（不查 DB）。就绪/真健康用 /readyz。"""
     return {"status": "ok"}
+
+
+@app.get("/readyz")
+def readyz() -> JSONResponse:
+    """深度就绪探针（区别于浅层 /healthz）：探 DB 连通 + 返回 alembic 版本。
+    DB 不可达时返回 503，让外部探活/部署闸门能识别"假绿"，根除"app 活着但库死了还显示绿"。"""
+    try:
+        db = SessionLocal()
+        try:
+            db.execute(text("SELECT 1"))
+            ver = db.execute(text("SELECT version_num FROM alembic_version")).scalar()
+        finally:
+            db.close()
+    except Exception as exc:  # noqa: BLE001 — 就绪探针须吞所有异常并转 503
+        _log.error("readyz failed", extra={"event": "readyz_fail", "err": str(exc)[:200]})
+        return JSONResponse(status_code=503, content={"status": "unready", "db": "fail"})
+    return JSONResponse(status_code=200, content={"status": "ready", "db": "ok", "alembic": ver})
 
 
 for router in (
