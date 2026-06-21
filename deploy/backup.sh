@@ -23,13 +23,25 @@ mkdir -p "$BACKUP_DIR" "$BACKUP_DIR/weekly" "$BACKUP_DIR/monthly"
 
 ENVARG=""; [ -n "$ENV_FILE" ] && ENVARG="--env-file $ENV_FILE"
 
+# 告警通道密钥从 600 权限的 .ops.env 读（PUSHPLUS_TOKEN / WEBHOOK_URL），不入仓、不进 crontab
+[ -f /opt/producthub/deploy/.ops.env ] && . /opt/producthub/deploy/.ops.env
+
 notify() {  # $1=级别 $2=消息
     echo "[$STAMP] [$1] $2"
-    [ -n "${WEBHOOK_URL:-}" ] && \
-      curl -fsS -m 10 -X POST "$WEBHOOK_URL" \
-        -H 'Content-Type: application/json' \
-        -d "{\"msgtype\":\"text\",\"text\":{\"content\":\"ProductHub 备份[$1] $STAMP: $2\"}}" \
-        >/dev/null 2>&1 || true
+    _msg="ProductHub 备份[$1] $STAMP: $2"
+    if [ -n "${PUSHPLUS_TOKEN:-}" ]; then
+        # PushPlus：推个人微信，template=txt 纯文本
+        curl -fsS -m 10 -X POST https://www.pushplus.plus/send \
+          -H 'Content-Type: application/json' \
+          -d "{\"token\":\"${PUSHPLUS_TOKEN}\",\"title\":\"ProductHub 备份[$1]\",\"content\":\"${_msg}\",\"template\":\"txt\"}" \
+          >/dev/null 2>&1 || true
+    elif [ -n "${WEBHOOK_URL:-}" ]; then
+        # 企业微信/钉钉群机器人格式（备选）
+        curl -fsS -m 10 -X POST "$WEBHOOK_URL" \
+          -H 'Content-Type: application/json' \
+          -d "{\"msgtype\":\"text\",\"text\":{\"content\":\"${_msg}\"}}" \
+          >/dev/null 2>&1 || true
+    fi
 }
 fail() { notify "FAIL" "$1"; exit 1; }
 
